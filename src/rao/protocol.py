@@ -52,6 +52,7 @@ DEFAULTS = {
 }
 
 _ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_WIN_ABS_RE = re.compile(r"^[A-Za-z]:[/\\]")
 
 
 def new_goal_id():
@@ -111,6 +112,12 @@ def _check_step(step, idx, seen_ids):
     return None
 
 
+def is_abs_path(p):
+    """POSIX absolute OR Windows drive-absolute (protocol is cross-platform;
+    local Windows RDA runs are legitimate test targets)."""
+    return isinstance(p, str) and (p.startswith("/") or bool(_WIN_ABS_RE.match(p)))
+
+
 def validate_goal(goal):
     """Validate a goal dict. Returns (ok, error_string_or_None)."""
     if not isinstance(goal, dict):
@@ -124,7 +131,7 @@ def validate_goal(goal):
     if not isinstance(goal.get("objective"), str) or not goal["objective"].strip():
         return False, "objective required"
     ws = goal.get("workspace")
-    if ws is not None and (not isinstance(ws, str) or not ws.startswith("/")):
+    if ws is not None and not is_abs_path(ws):
         return False, "workspace must be absolute path when present"
     c = goal.get("constraints", {})
     if not isinstance(c, dict):
@@ -138,6 +145,16 @@ def validate_goal(goal):
     planner = (goal.get("plan") or {}).get("planner", "main-agent")
     if planner != "main-agent":
         return False, "plan.planner must be 'main-agent' in v1"
+    ews = goal.get("ensureWorkspace")
+    if ews is not None:
+        if not isinstance(ews, dict):
+            return False, "ensureWorkspace must be an object"
+        if not isinstance(ews.get("repoUrl"), str) or not ews["repoUrl"]:
+            return False, "ensureWorkspace.repoUrl required"
+        if not is_abs_path(ews.get("path")):
+            return False, "ensureWorkspace.path must be absolute"
+        if "branch" in ews and not isinstance(ews["branch"], str):
+            return False, "ensureWorkspace.branch must be a string"
     if "plan" in goal and goal["plan"] is not None:
         plan = goal["plan"]
         steps = plan.get("steps")
