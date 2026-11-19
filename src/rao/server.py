@@ -10,7 +10,7 @@ import sys
 
 from mcp.server.fastmcp import FastMCP
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from rao import protocol  # noqa: E402
 from rao.devices import DeviceRegistry  # noqa: E402
