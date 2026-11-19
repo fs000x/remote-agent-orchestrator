@@ -260,6 +260,15 @@ class GoalEngine(object):
             except Exception as exc:
                 attempt_data["reason"] = "spawn error: %s" % exc
                 return False
+            # normalize streams to str (bytes on all platforms) for criteria+events
+            try:
+                res.stdout = (res.stdout or b"").decode("utf-8", "replace")
+                res.stderr = (res.stderr or b"").decode("utf-8", "replace")
+            except Exception:
+                res.stdout, res.stderr = "", ""
+            if self.cancelled:
+                attempt_data["reason"] = "cancelled during step"
+                return False
             self._collect_artifacts(step, res, attempt_data)
             return self._criteria_met(step, res)
         if stype == "wait_file":
@@ -268,8 +277,10 @@ class GoalEngine(object):
             while time.monotonic() < deadline:
                 if os.path.exists(path):
                     return True
+                if not self.poll_injections() or self.cancelled:
+                    attempt_data["reason"] = "cancelled while waiting"
+                    return False
                 time.sleep(0.5)
-                self.poll_injections()
             attempt_data["reason"] = "wait_file timeout: %s" % path
             return False
         if stype == "artifact":
@@ -475,9 +486,10 @@ def main():
         return 2
     ok, err = protocol.validate_goal(goal)
     if not ok:
+        gid = goal.get("goalId", "?") if isinstance(goal, dict) else "?"
         sys.stderr.write("goal invalid: %s\n" % err)
         sys.stdout.write(json.dumps(protocol.make_event(
-            protocol.KIND_ERROR, goal.get("goalId", "?"),
+            protocol.KIND_ERROR, gid,
             {"message": "RAO_GOAL_INVALID: %s" % err, "fatal": True})) + "\n")
         sys.stdout.flush()
         return 2

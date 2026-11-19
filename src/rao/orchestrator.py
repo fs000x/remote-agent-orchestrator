@@ -43,10 +43,8 @@ class GoalRun:
 
     # --- state helpers -----------------------------------------------------
     def _set_state(self, state):
-        # terminal states are sticky until finalize re-asserts the final one
-        if self.is_terminal() and state not in (
-                protocol.RUN_DONE, protocol.RUN_FAILED,
-                protocol.RUN_TIMEOUT, protocol.RUN_CANCELLED):
+        # terminal states are sticky: whoever decides the outcome first wins
+        if self.is_terminal():
             return
         self.state = state
         with self._wake:
@@ -72,7 +70,6 @@ class GoalRun:
     # --- main pump ---------------------------------------------------------
     def _run(self):
         orch = self.orch
-        goal_line = json.dumps(self.goal, ensure_ascii=False)
         try:
             with orch._slot_for(self.goal):
                 if self.cancel_requested:
@@ -85,8 +82,9 @@ class GoalRun:
                     return
                 self._set_state(protocol.RUN_RUNNING)
                 try:
+                    # pass the goal OBJECT; transport encodes it exactly once
                     self.chan = orch.transport.open_session(
-                        self.goal_id, self.device, goal_line)
+                        self.goal_id, self.device, self.goal)
                 except TransportError as exc:
                     self.error = "%s: %s" % (exc.code, exc)
                     self._set_state(protocol.RUN_FAILED)
@@ -130,28 +128,34 @@ class GoalRun:
                         ev.get("data", {}).get("phase") == "running":
                     self._attempt_count += 1
                 if kind == protocol.KIND_RESULT:
+                    if self.is_terminal():
+                        # deadline/cancel already decided the outcome
+                        return
                     self.result = ev.get("data", {})
                     self._set_state(self._result_state(self.result.get("status")))
                     return
-            # orchestrator-side enforcement (DESIGN.md A6)
+            # orchestrator-side enforcement (DESIGN.md A6): decide the terminal
+            # state FIRST (sticky), then stop the process — a racing result
+            # event from RDA must not override (T7).
             if self._attempt_count > self.max_steps:
-                self._force_cancel("RAO_BUDGET_EXCEEDED (orchestrator)")
-                continue
-            if now >= self.deadline_ms:
-                self._force_cancel("goal deadline exceeded (orchestrator)")
                 self._set_state(protocol.RUN_TIMEOUT)
+                self._force_cancel("RAO_BUDGET_EXCEEDED (orchestrator)")
+                return
+            if now >= self.deadline_ms:
+                self._set_state(protocol.RUN_TIMEOUT)
+                self._force_cancel("goal deadline exceeded (orchestrator)")
                 return
             if not self.chan.closed and \
                     now - last_event_ms > self.silence_ms and \
                     not self.chan.alive():
-                self._force_cancel("event silence + dead channel")
                 self._set_state(protocol.RUN_FAILED)
                 self.error = "RAO_TRANSPORT_LOST: silence watchdog"
+                self._force_cancel("event silence + dead channel")
                 return
             if now - last_event_ms > self.silence_ms * 3:
-                self._force_cancel("event silence watchdog (3x)")
                 self._set_state(protocol.RUN_FAILED)
                 self.error = "RAO_TRANSPORT_LOST: silence watchdog 3x"
+                self._force_cancel("event silence watchdog (3x)")
                 return
             if self.chan.exit_code is not None and idx >= len(self.chan.events):
                 break  # process exited; drain complete
@@ -201,8 +205,8 @@ class GoalRun:
         if self.is_terminal():
             return False
         self.cancel_requested = True
+        self._set_state(protocol.RUN_CANCELLED)  # sticky decision first
         self._force_cancel(reason)
-        self._set_state(protocol.RUN_CANCELLED)
         return True
 
     def snapshot(self, max_events=50):
@@ -221,9 +225,14 @@ class GoalRun:
     def _finalize(self):
         if self.chan is not None:
             if self.result is None:
-                self.result = {"status": protocol.ST_CANCELLED if self.chan.killed
-                               else protocol.ST_FAILED,
-                               "summary": self.error or "run ended without result",
+                # no result event: synthesize from the decided state
+                st = {protocol.RUN_TIMEOUT: protocol.ST_TIMEOUT,
+                      protocol.RUN_CANCELLED: protocol.ST_CANCELLED,
+                      protocol.RUN_DONE: protocol.ST_SUCCESS}.get(
+                          self.state, protocol.ST_FAILED)
+                self.result = {"status": st,
+                               "summary": self.error or
+                                          "run ended without result event",
                                "steps": [], "artifacts": [], "assumptions": [],
                                "metrics": {}}
             self.chan.close()
@@ -231,8 +240,9 @@ class GoalRun:
         self._finalized = True
         with self._wake:
             self._wake.notify_all()
-        self._set_state(self._result_state(
-            (self.result or {}).get("status", protocol.ST_FAILED)))
+        if not self.is_terminal():
+            self._set_state(self._result_state(
+                (self.result or {}).get("status", protocol.ST_FAILED)))
 
 
 class RunStore:

@@ -69,8 +69,15 @@ class GoalChannel:
                 protocol.KIND_ERROR, self.goal_id,
                 {"message": "RAO_TRANSPORT_LOST: %s" % exc, "fatal": True}))
         finally:
-            self.exit_code = reader_fn.exit_code() \
-                if hasattr(reader_fn, "exit_code") else self.exit_code
+            # exit_code may be an int attribute (generator sets it) or a method
+            ec = getattr(reader_fn, "exit_code", None)
+            if callable(ec):
+                try:
+                    ec = ec()
+                except Exception:
+                    ec = None
+            if ec is not None:
+                self.exit_code = ec
             with self._event_cond:
                 self._event_cond.notify_all()
 
