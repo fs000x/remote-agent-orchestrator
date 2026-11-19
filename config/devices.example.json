@@ -1,0 +1,16 @@
+{
+  "devices": [
+    {
+      "id": "diablo-100",
+      "host": "192.168.0.100",
+      "port": 22,
+      "user": "diablo",
+      "workspace": "/home/diablo/git500/zcode_prj",
+      "maxConcurrentGoals": 2,
+      "auth": {
+        "type": "password",
+        "password": "REPLACE_ME (or set env RAO_DEVICE_DIABLO_100_PASSWORD)"
+      }
+    }
+  ]
+}

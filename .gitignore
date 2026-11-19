@@ -1,0 +1,8 @@
+# secrets & local state
+config/devices.json
+runs/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
