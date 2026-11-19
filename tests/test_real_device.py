@@ -251,3 +251,80 @@ def test_t9_forbidden_command_blocked(orch):
     # the dangerous command never ran: system still responsive
     rc, out, _ = _remote_exec("echo alive")
     assert rc == 0 and "alive" in out
+
+
+# --- T11 (v0.2): ensureWorkspace on real device ---------------------------
+def test_t11_ensure_workspace_clone(orch):
+    # create a fresh origin repo on the device, then let ensureWorkspace clone it
+    ws_root = "/home/diablo/git500/zcode_prj/out"
+    origin = "%s/ws-origin-%d" % (ws_root, protocol.now_ms())
+    target = "%s/ws-clone-%d" % (ws_root, protocol.now_ms())
+    rc, _, err = _remote_exec(
+        "mkdir -p %s && git init -q %s && cd %s && "
+        "git checkout -q -b master && echo rao-real-ws > hello.txt && "
+        "git add . && GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t "
+        "GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t "
+        "git commit -qm init" % (ws_root, origin, origin))
+    assert rc == 0, err
+    goal = _goal(
+        workspace=target,
+        ensureWorkspace={"repoUrl": "file://%s" % origin, "path": target,
+                         "branch": "master"},
+        plan={"steps": [{"id": "s1", "type": "shell", "command": "cat hello.txt",
+                         "success": {"exitCode": 0,
+                                     "stdoutContains": "rao-real-ws"}}]})
+    ds = orch.dispatch([DEVICE_ID], goal)
+    run = _wait(orch, ds[0]["goalId"])
+    assert run.result["status"] == "success", run.result["summary"]
+    step_ids = [s["id"] for s in run.result["steps"]]
+    assert "ensure-ws-clone" in step_ids
+    assert any("master" in a for a in run.result["assumptions"])
+    rc, out, _ = _remote_exec("cat %s/hello.txt" % target)
+    assert rc == 0 and "rao-real-ws" in out
+
+
+# --- T12 (v0.2): DAG chain on real device ---------------------------------
+def test_t12_dag_two_node_chain(orch):
+    stamp = protocol.now_ms()
+    marker = "%s/dag-%s.txt" % (OUT_DIR, stamp)
+    nodes = [
+        {"key": "writer", "deviceId": DEVICE_ID, "goal": {
+            "protocol": protocol.PROTOCOL_VERSION, "objective": "write marker",
+            "plan": {"steps": [{"id": "w", "type": "shell",
+                                "command": "echo dag-ok > %s" % marker,
+                                "success": {"exitCode": 0}}]}}},
+        {"key": "reader", "deviceId": DEVICE_ID, "goal": {
+            "protocol": protocol.PROTOCOL_VERSION, "objective": "read marker",
+            "plan": {"steps": [{"id": "r", "type": "shell",
+                                "command": "cat %s" % marker,
+                                "success": {"exitCode": 0,
+                                            "stdoutContains": "dag-ok"}}]}}},
+    ]
+    dag = orch.dispatch_dag(nodes, [["writer", "reader"]])
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        snap = dag.snapshot()
+        if all(n["state"] in ("done", "failed", "skipped", "timeout",
+                              "cancelled") for n in snap["nodes"]):
+            break
+        time.sleep(0.2)
+    snap = dag.snapshot()
+    states = {n["key"]: n["state"] for n in snap["nodes"]}
+    assert states == {"writer": "done", "reader": "done"}, snap
+    rc, out, _ = _remote_exec("cat %s" % marker)
+    assert rc == 0 and "dag-ok" in out
+
+
+# --- T13 (v0.2): report history & diff ------------------------------------
+def test_t13_report_history_and_diff(orch):
+    goal = _goal(plan={"steps": [{"id": "s", "type": "shell",
+                                  "command": "echo report-subject",
+                                  "success": {"exitCode": 0}}]})
+    ds = orch.dispatch([DEVICE_ID], goal)
+    report = orch.collect([ds[0]["goalId"]], timeout_ms=60000)
+    assert report["matrix"][0]["status"] == "success"
+    names = [r["file"] for r in orch.run_store.list_reports()]
+    assert os.path.basename(report["reportFile"]) in names
+    # diff the report against itself -> no changes, no regressions
+    diff = orch.run_store.diff_reports(report, report)
+    assert diff["changed"] == [] and diff["regressions"] == []

@@ -250,10 +250,13 @@ class GoalEngine(object):
                           {"message": "step %s blocked: matches forbidden %r"
                                       % (sid, violated)})
                 return False
-            cwd = step.get("cwd") or self.goal.get("workspace") or None
+            ws = self.goal.get("workspace")
+            base = step.get("cwd") or (ws if ws and os.path.isdir(ws) else None)
+            cwd = base or None
             try:
                 res = subprocess.run(cmd, shell=True, cwd=cwd,
-                                     capture_output=True, timeout=timeout_s)
+                                     capture_output=True, timeout=timeout_s,
+                                     stdin=subprocess.DEVNULL)
             except subprocess.TimeoutExpired:
                 attempt_data["reason"] = "step timeout"
                 return False
@@ -317,6 +320,61 @@ class GoalEngine(object):
         return rep
 
     # --- recon -------------------------------------------------------------
+    @staticmethod
+    def _shq(s):
+        """Platform-aware shell quoting (POSIX: shlex; Windows: double quotes)."""
+        if os.name == "nt":
+            return '"%s"' % s
+        import shlex
+        return shlex.quote(s)
+
+    def _ensure_workspace(self, ews):
+        """Prepare goal.ensureWorkspace {repoUrl, path, branch?} idempotently.
+
+        Existing repo: fetch + checkout + ff-merge (ff failure = warning, not
+        fatal). Missing: clone. Reuses run_step for events/retries/criteria.
+        """
+        path = ews["path"]
+        branch = ews.get("branch") or ""
+        steps = []
+        if os.path.isdir(os.path.join(path, ".git")):
+            steps.append({"id": "ensure-ws-fetch", "type": "shell",
+                          "command": "git -C %s fetch origin --prune"
+                                     % self._shq(path),
+                          "success": {"exitCode": 0}, "retries": 1,
+                          "retryBackoffMs": 1000})
+            if branch:
+                steps.append({"id": "ensure-ws-checkout", "type": "shell",
+                              "command": "git -C %s checkout %s"
+                                         % (self._shq(path),
+                                            self._shq(branch)),
+                              "success": {"exitCode": 0}})
+                steps.append({"id": "ensure-ws-ff", "type": "shell",
+                              "command": "git -C %s merge --ff-only origin/%s"
+                                         % (self._shq(path),
+                                            self._shq(branch)),
+                              "success": {"exitCode": 0}, "optional": True})
+        else:
+            cmd = "git clone %s %s %s" % (
+                ("--branch %s" % self._shq(branch)) if branch else "",
+                self._shq(ews["repoUrl"]), self._shq(path))
+            steps.append({"id": "ensure-ws-clone", "type": "shell",
+                          "command": cmd.strip(), "success": {"exitCode": 0},
+                          "retries": 1, "retryBackoffMs": 2000})
+        last = {"status": "ok"}
+        for s in steps:
+            rep = self.run_step(s)
+            last = rep
+            if rep.get("status") == "failed":
+                return rep
+            if rep.get("status") == "skipped" and s["id"] == "ensure-ws-ff":
+                self.assumptions.append(
+                    "workspace %s diverged from origin/%s; left as-is"
+                    % (path, branch))
+        if branch:
+            self.assumptions.append("workspace pinned to branch %s" % branch)
+        return last
+
     def run_recon(self):
         facts = {}
         try:
@@ -377,6 +435,13 @@ class GoalEngine(object):
             self.emit(protocol.KIND_STARTED,
                       {"rdaVersion": RDA_VERSION, "python": sys.version.split()[0],
                        "host": host, "pid": os.getpid()})
+
+            if self.goal.get("ensureWorkspace"):
+                rep = self._ensure_workspace(self.goal["ensureWorkspace"])
+                if rep.get("status") == "failed":
+                    return self.finish(protocol.ST_FAILED,
+                                       "ensureWorkspace failed: %s"
+                                       % rep.get("reason"))
 
             plan = self.goal.get("plan")
             if not plan or not (plan.get("steps") or []):

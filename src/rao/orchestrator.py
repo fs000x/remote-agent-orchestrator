@@ -250,6 +250,65 @@ class RunStore:
         self.runs_dir = runs_dir
         os.makedirs(runs_dir, exist_ok=True)
 
+    # -- reports (iteration v0.2: history & diff) ---------------------------
+    def list_reports(self):
+        out = []
+        for name in sorted(os.listdir(self.runs_dir)):
+            if not name.startswith("report-") or not name.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(self.runs_dir, name),
+                          encoding="utf-8") as fh:
+                    data = json.load(fh)
+                out.append({"file": name,
+                            "generatedMs": data.get("generatedMs"),
+                            "successCount": data.get("successCount"),
+                            "failCount": data.get("failCount"),
+                            "goals": len(data.get("matrix", []))})
+            except (ValueError, OSError):
+                continue
+        return out
+
+    def load_report(self, name):
+        if os.sep in name or "/" in name or ".." in name:
+            raise ValueError("report name must be a bare filename")
+        path = os.path.join(self.runs_dir, name)
+        if not os.path.isfile(path):
+            raise KeyError("no such report: %s" % name)
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    @staticmethod
+    def diff_reports(base, newer):
+        """Diff two report dicts by goalId. Returns a change summary."""
+        def index(rep):
+            return {m.get("goalId"): m for m in rep.get("matrix", [])}
+        ia, ib = index(base), index(newer)
+        changes = []
+        for gid in sorted(set(ia) | set(ib)):
+            sa = (ia.get(gid) or {}).get("status")
+            sb = (ib.get(gid) or {}).get("status")
+            if sa != sb:
+                changes.append({"goalId": gid, "from": sa or "(absent)",
+                                "to": sb or "(absent)",
+                                "summary": (ib.get(gid) or ia.get(gid) or {})
+                                           .get("summary")})
+        return {
+            "baseFile": base.get("reportFile"),
+            "newerFile": newer.get("reportFile"),
+            "counts": {"base": {"success": base.get("successCount"),
+                                "fail": base.get("failCount")},
+                       "newer": {"success": newer.get("successCount"),
+                                 "fail": newer.get("failCount")}},
+            "changed": changes,
+            "regressions": [c for c in changes
+                            if c["from"] in (protocol.ST_SUCCESS,
+                                             protocol.ST_PARTIAL)
+                            and c["to"] not in (protocol.ST_SUCCESS,
+                                                protocol.ST_PARTIAL,
+                                                "(absent)")],
+        }
+
     def save(self, run):
         rec = {
             "goal": run.goal,
@@ -277,6 +336,144 @@ class RunStore:
             json.dump(report, fh, ensure_ascii=False, indent=1)
         return path
 
+    def save_dag(self, dag):
+        path = os.path.join(self.runs_dir, "dag-%s.json" % dag.dag_id)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(dag.snapshot(), fh, ensure_ascii=False, indent=1)
+        os.replace(tmp, path)
+        return path
+
+
+DAG_POLICIES = ("success", "lenient")
+_DAG_POLL_S = 0.3
+
+
+class DagRun:
+    """Cross-device goal DAG: nodes dispatch in topological order; a node
+    starts only when its dependencies satisfy the policy (DESIGN.md §11.3)."""
+
+    def __init__(self, dag_id, nodes, edges, policy, orch):
+        self.dag_id = dag_id
+        self.policy = policy
+        self.orch = orch
+        # node: {key, deviceId, goal, goalId, state, status, reason, run}
+        self.nodes = {}
+        for n in nodes:
+            self.nodes[n["key"]] = {"key": n["key"], "deviceId": n["deviceId"],
+                                    "goal": n["goal"], "goalId": None,
+                                    "state": "pending", "status": None,
+                                    "reason": None, "run": None}
+        self.edges = [list(e) for e in edges]
+        self.deps = {}
+        for frm, to in self.edges:
+            self.deps.setdefault(to, []).append(frm)
+        self._thread = threading.Thread(target=self._schedule, daemon=True,
+                                        name="rao-dag-%s" % dag_id[:8])
+
+    # -- graph helpers ------------------------------------------------------
+    def _dep_status_ok(self, dep_node):
+        st = dep_node["status"]
+        if self.policy == "lenient":
+            return st in (protocol.ST_SUCCESS, protocol.ST_PARTIAL)
+        return st == protocol.ST_SUCCESS
+
+    def _downstream(self, keys):
+        """All nodes transitively depending on any key in `keys`."""
+        out, frontier = set(), list(keys)
+        while frontier:
+            k = frontier.pop()
+            for frm, to in self.edges:
+                if frm == k and to not in out:
+                    out.add(to)
+                    frontier.append(to)
+        return out
+
+    # -- scheduler ----------------------------------------------------------
+    def start(self):
+        self._thread.start()
+
+    def _schedule(self):
+        try:
+            while True:
+                progressed = False
+                # 1. propagate failures to downstream (transitive skip)
+                failed_keys = [k for k, n in self.nodes.items()
+                               if n["state"] in ("failed", "timeout",
+                                                 "cancelled", "skipped")]
+                for k in self._downstream(failed_keys):
+                    n = self.nodes[k]
+                    if n["state"] == "pending":
+                        n["state"] = "skipped"
+                        n["reason"] = "dependency %s did not succeed" % k
+                        progressed = True
+                # 2. policy-violating deps: skip pending nodes whose deps are
+                #    all terminal but at least one status violates the policy
+                for k, n in self.nodes.items():
+                    if n["state"] != "pending":
+                        continue
+                    deps = self.deps.get(k, [])
+                    if deps and all(self.nodes[d]["state"] in
+                                    ("done", "failed", "timeout", "cancelled",
+                                     "skipped") for d in deps):
+                        bad = [d for d in deps
+                               if not self._dep_status_ok(self.nodes[d])]
+                        if bad:
+                            n["state"] = "skipped"
+                            n["reason"] = ("dependency %s status=%s violates "
+                                           "policy=%s" % (bad[0],
+                                                          self.nodes[bad[0]]["status"],
+                                                          self.policy))
+                            progressed = True
+                # 3. launch ready nodes
+                for k, n in self.nodes.items():
+                    if n["state"] != "pending":
+                        continue
+                    deps = self.deps.get(k, [])
+                    if not deps or all(
+                            self.nodes[d]["state"] == "done"
+                            and self._dep_status_ok(self.nodes[d])
+                            for d in deps):
+                        n["goalId"] = protocol.new_goal_id()
+                        n["goal"]["goalId"] = n["goalId"]
+                        n["goal"]["deviceId"] = n["deviceId"]
+                        n["state"] = "queued"
+                        self.orch.dispatch([n["deviceId"]], n["goal"])
+                        n["run"] = self.orch.get_run(n["goalId"])
+                        progressed = True
+                # 3. refresh terminal nodes
+                for k, n in self.nodes.items():
+                    if n["state"] in ("queued", "running") and n["run"]:
+                        if n["run"].is_terminal():
+                            n["state"] = "done" if n["run"].state == \
+                                protocol.RUN_DONE else n["run"].state
+                            n["status"] = (n["run"].result or {}).get("status")
+                            progressed = True
+                if all(n["state"] in ("done", "failed", "timeout",
+                                      "cancelled", "skipped")
+                       for n in self.nodes.values()):
+                    break
+                if not progressed:
+                    time.sleep(_DAG_POLL_S)
+        except Exception as exc:  # scheduler bug: fail remaining pending nodes
+            for n in self.nodes.values():
+                if n["state"] in ("pending", "queued", "running"):
+                    n["state"] = "failed"
+                    n["reason"] = "dag scheduler error: %s" % exc
+        finally:
+            self.orch.run_store.save_dag(self)
+
+    def snapshot(self):
+        return {
+            "dagId": self.dag_id,
+            "policy": self.policy,
+            "edges": self.edges,
+            "nodes": [{"key": k, "deviceId": n["deviceId"],
+                       "goalId": n["goalId"], "state": n["state"],
+                       "status": n["status"], "reason": n["reason"]}
+                      for k, n in self.nodes.items()],
+        }
+
 
 class Orchestrator:
     def __init__(self, registry, transport=None, runs_dir=None,
@@ -295,6 +492,7 @@ class Orchestrator:
         self._device_slots = {}   # device_id -> Semaphore
         self._device_slot_lock = threading.Lock()
         self.runs = {}            # goalId -> GoalRun
+        self.dags = {}            # dagId -> DagRun
 
     # --- slot management ---------------------------------------------------
     def _slot_for(self, goal):
@@ -347,10 +545,67 @@ class Orchestrator:
         with self._lock:
             return self.runs.get(goal_id)
 
+    # --- DAG dispatch (v0.2) -----------------------------------------------
+    def dispatch_dag(self, nodes, edges, policy="success"):
+        """nodes: [{key, deviceId, goal}]; edges: [[fromKey, toKey]] (to waits
+        for from). Validates graph, then schedules topologically."""
+        if policy not in DAG_POLICIES:
+            raise ValueError("policy must be one of %s" % (DAG_POLICIES,))
+        keys = [n.get("key") for n in nodes]
+        if not keys or len(set(keys)) != len(keys):
+            raise ValueError("RAO_DAG_INVALID: node keys must be non-empty "
+                             "and unique")
+        keyset = set(keys)
+        for n in nodes:
+            if n.get("deviceId") not in self.registry.list_ids():
+                raise KeyError("unknown deviceId: %r" % n.get("deviceId"))
+            g = dict(n.get("goal") or {})
+            g.setdefault("protocol", protocol.PROTOCOL_VERSION)
+            ok, err = protocol.validate_goal(
+                dict(g, goalId="probe", deviceId=n["deviceId"]))
+            if not ok:
+                raise ValueError("RAO_DAG_INVALID node %r: %s"
+                                 % (n.get("key"), err))
+        for e in edges:
+            if not isinstance(e, (list, tuple)) or len(e) != 2 or \
+                    e[0] not in keyset or e[1] not in keyset:
+                raise ValueError("RAO_DAG_INVALID edge: %r" % (e,))
+            if e[0] == e[1]:
+                raise ValueError("RAO_DAG_INVALID self-edge: %r" % (e,))
+        # cycle detection (Kahn)
+        indeg = {k: 0 for k in keys}
+        for frm, to in edges:
+            indeg[to] += 1
+        queue = [k for k, d in indeg.items() if d == 0]
+        seen = 0
+        adj = {}
+        for frm, to in edges:
+            adj.setdefault(frm, []).append(to)
+        while queue:
+            k = queue.pop()
+            seen += 1
+            for nxt in adj.get(k, []):
+                indeg[nxt] -= 1
+                if indeg[nxt] == 0:
+                    queue.append(nxt)
+        if seen != len(keys):
+            raise ValueError("RAO_DAG_INVALID: cycle detected")
+
+        dag_id = protocol.new_goal_id()
+        dag = DagRun(dag_id, nodes, edges, policy, self)
+        with self._lock:
+            self.dags[dag_id] = dag
+        dag.start()
+        return dag
+
     def runs_for_device(self, device_id):
         with self._lock:
             return [r for r in self.runs.values()
                     if r.goal["deviceId"] == device_id]
+
+    def get_dag(self, dag_id):
+        with self._lock:
+            return self.dags.get(dag_id)
 
     # --- collect -----------------------------------------------------------
     def collect(self, goal_ids, timeout_ms=120000):

@@ -107,3 +107,23 @@ def test_step_timeout_fallback_chain():
     assert protocol.step_effective_timeout(
         {"id": "s", "type": "shell", "command": "x"}, {}) == \
         protocol.DEFAULTS["stepTimeoutMs"]
+
+
+def test_ensure_workspace_valid():
+    ok, err = protocol.validate_goal(_base_goal(ensureWorkspace={
+        "repoUrl": "https://example.com/r.git", "path": "/srv/r",
+        "branch": "main"}))
+    assert ok, err
+    ok, _ = protocol.validate_goal(_base_goal(ensureWorkspace={
+        "repoUrl": "file:///tmp/r", "path": "/srv/r"}))
+    assert ok
+
+
+def test_ensure_workspace_invalid():
+    ok, _ = protocol.validate_goal(_base_goal(ensureWorkspace={"path": "/x"}))
+    assert not ok, "repoUrl required"
+    ok, _ = protocol.validate_goal(_base_goal(ensureWorkspace={
+        "repoUrl": "x", "path": "relative"}))
+    assert not ok, "path must be absolute"
+    ok, _ = protocol.validate_goal(_base_goal(ensureWorkspace="string"))
+    assert not ok

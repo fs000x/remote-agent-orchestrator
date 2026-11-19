@@ -107,5 +107,53 @@ def remote_collect(goal_ids: list, timeout_ms: int = 120000) -> str:
     return json.dumps(report, ensure_ascii=False, indent=1)
 
 
+@mcp.tool()
+def remote_dispatch_dag(nodes: list, edges: list, policy: str = "success") -> str:
+    """Dispatch a goal DAG across devices. nodes: [{key, deviceId, goal}];
+    edges: [[fromKey, toKey]] — toKey starts only after fromKey satisfies the
+    policy ("success" default; "lenient" also accepts partial). Failed deps
+    transitively skip downstream nodes. Returns dagId + node plan."""
+    try:
+        dag = orch.dispatch_dag(nodes, edges, policy=policy)
+    except (ValueError, KeyError) as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+    return json.dumps({"dagId": dag.dag_id, "snapshot": dag.snapshot()},
+                      ensure_ascii=False, indent=1)
+
+
+@mcp.tool()
+def remote_dag_status(dag_id: str) -> str:
+    """Status snapshot of a dispatched DAG (node states + goalIds)."""
+    dag = orch.get_dag(dag_id)
+    if dag is None:
+        return json.dumps({"error": "no such dagId: %s" % dag_id},
+                          ensure_ascii=False)
+    return json.dumps(dag.snapshot(), ensure_ascii=False, indent=1)
+
+
+@mcp.tool()
+def remote_reports(action: str = "list", file: str = None,
+                   file_b: str = None) -> str:
+    """Report history: action="list" (all saved reports), "get" (one report
+    by filename), or "diff" (compare file vs file_b by goalId; includes
+    regressions list)."""
+    try:
+        if action == "list":
+            return json.dumps({"reports": orch.run_store.list_reports()},
+                              ensure_ascii=False, indent=1)
+        if action == "get":
+            return json.dumps(orch.run_store.load_report(file),
+                              ensure_ascii=False, indent=1)
+        if action == "diff":
+            return json.dumps(
+                orch.run_store.diff_reports(orch.run_store.load_report(file),
+                                            orch.run_store.load_report(file_b)),
+                ensure_ascii=False, indent=1)
+        return json.dumps({"error": "action must be list|get|diff"},
+                          ensure_ascii=False)
+    except (KeyError, ValueError) as exc:
+        return json.dumps({"error": str(exc)}, ensure_ascii=False)
+
+
 if __name__ == "__main__":
     mcp.run()
