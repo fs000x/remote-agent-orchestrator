@@ -6,11 +6,12 @@ import threading
 import time
 
 from . import protocol
-from .transport import SshTransport, TransportError
+from .transport import (SshTransport, TransportError, ChannelLost)  # noqa: F401
 
 KILL_GRACE_S = 5.0
 PUMP_SLICE_S = 1.0
 ASK_TIMEOUT_MS = 3600000  # ask may wait long; overall deadline still applies
+RESUME_MAX_DEFAULT = 5
 
 
 class GoalRun:
@@ -37,6 +38,8 @@ class GoalRun:
         self._attempt_count = 0
         self._finalized = False
         self.cancel_requested = False
+        self.resume_max = int(os.environ.get("RAO_RESUME_MAX",
+                                             RESUME_MAX_DEFAULT))
         self._wake = threading.Condition()
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="rao-goal-%s" % self.goal_id[:8])
@@ -97,7 +100,10 @@ class GoalRun:
                                    "assumptions": [], "metrics": {}}
                     self._set_state(protocol.RUN_CANCELLED)
                     return
-                self._pump()
+                if getattr(self.chan, "supports_resume", False):
+                    self._pump_daemon()   # v0.3: reconnect + attach on loss
+                else:
+                    self._pump()
         except Exception as exc:  # never leak thread exceptions
             self.error = "orchestrator error: %s" % exc
             self._set_state(protocol.RUN_FAILED)
@@ -171,6 +177,83 @@ class GoalRun:
                        "metrics": {}}
         self._set_state(self._result_state(status))
 
+    def _pump_daemon(self):
+        """Daemon-mode pump: on link loss, reconnect + attach and continue
+        (events deduped by daemon seq). Budget/deadline still enforced."""
+        self._last_seq = 0
+        attempt = 0
+        while True:
+            try:
+                idx = 0
+                last_event_ms = protocol.now_ms()
+                asked = False
+                while True:
+                    ev, idx = self.chan.wait_event(idx, PUMP_SLICE_S)
+                    now = protocol.now_ms()
+                    if ev is not None:
+                        seq = (self.chan.event_seqs[idx - 1]
+                               if idx - 1 < len(self.chan.event_seqs) else None)
+                        if seq is not None and seq <= self._last_seq:
+                            continue  # replayed on attach: already processed
+                        self._last_seq = seq or self._last_seq
+                        last_event_ms = now
+                        kind = ev.get("kind")
+                        if kind == protocol.KIND_ASK:
+                            asked = True
+                            self._set_state(protocol.RUN_ASK_WAITING)
+                        elif asked and kind in (protocol.KIND_PROGRESS,
+                                                protocol.KIND_MILESTONE,
+                                                protocol.KIND_STEP_RESULT,
+                                                protocol.KIND_RECON,
+                                                protocol.KIND_WARNING):
+                            asked = False
+                            self._set_state(protocol.RUN_RUNNING)
+                        if kind == protocol.KIND_PROGRESS and \
+                                ev.get("data", {}).get("phase") == "running":
+                            self._attempt_count += 1
+                        if kind == protocol.KIND_RESULT:
+                            if self.is_terminal():
+                                return
+                            self.result = ev.get("data", {})
+                            self._set_state(
+                                self._result_state(self.result.get("status")))
+                            return
+                    if self._attempt_count > self.max_steps:
+                        self._set_state(protocol.RUN_TIMEOUT)
+                        self._force_cancel("RAO_BUDGET_EXCEEDED (orchestrator)")
+                        return
+                    if now >= self.deadline_ms:
+                        self._set_state(protocol.RUN_TIMEOUT)
+                        self._force_cancel("goal deadline exceeded")
+                        return
+                    if not self.chan.alive():
+                        if now - last_event_ms > 2 * PUMP_SLICE_S:
+                            raise ChannelLost()
+                        # give a dead link a final drain window
+                        ev2, idx2 = self.chan.wait_event(idx, PUMP_SLICE_S)
+                        if ev2 is None:
+                            raise ChannelLost()
+                        idx = idx2 - 1  # reprocess next loop
+            except ChannelLost:
+                attempt += 1
+                if self.is_terminal() or self.cancel_requested:
+                    return
+                if attempt > self.resume_max:
+                    self.error = "resume budget exhausted after %d attempts" \
+                                 % attempt
+                    self._set_state(protocol.RUN_FAILED)
+                    return
+                time.sleep(min(2.0 * attempt, 5.0))
+                try:
+                    self.chan.close()
+                except Exception:
+                    pass
+                try:
+                    self.chan = self.orch.transport.open_resume_session(
+                        self.goal_id, self.device)
+                except Exception:   # reconnect failure counts against budget
+                    continue
+
     def _result_state(self, status):
         return {
             protocol.ST_SUCCESS: protocol.RUN_DONE,
@@ -223,18 +306,18 @@ class GoalRun:
         }
 
     def _finalize(self):
+        if self.result is None:
+            # no result event: synthesize from the decided state
+            st = {protocol.RUN_TIMEOUT: protocol.ST_TIMEOUT,
+                  protocol.RUN_CANCELLED: protocol.ST_CANCELLED,
+                  protocol.RUN_DONE: protocol.ST_SUCCESS}.get(
+                      self.state, protocol.ST_FAILED)
+            self.result = {"status": st,
+                           "summary": self.error or
+                                      "run ended without result event",
+                           "steps": [], "artifacts": [], "assumptions": [],
+                           "metrics": {}}
         if self.chan is not None:
-            if self.result is None:
-                # no result event: synthesize from the decided state
-                st = {protocol.RUN_TIMEOUT: protocol.ST_TIMEOUT,
-                      protocol.RUN_CANCELLED: protocol.ST_CANCELLED,
-                      protocol.RUN_DONE: protocol.ST_SUCCESS}.get(
-                          self.state, protocol.ST_FAILED)
-                self.result = {"status": st,
-                               "summary": self.error or
-                                          "run ended without result event",
-                               "steps": [], "artifacts": [], "assumptions": [],
-                               "metrics": {}}
             self.chan.close()
         self.orch.run_store.save(self)
         self._finalized = True

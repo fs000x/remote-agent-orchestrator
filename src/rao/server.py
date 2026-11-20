@@ -15,6 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from rao import protocol  # noqa: E402
 from rao.devices import DeviceRegistry  # noqa: E402
 from rao.orchestrator import Orchestrator  # noqa: E402
+from rao.transport import SshTransport, SshDaemonTransport  # noqa: E402
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -23,7 +24,31 @@ log = logging.getLogger("rao.server")
 mcp = FastMCP("remote-agent-orchestrator")
 
 registry = DeviceRegistry()
-orch = Orchestrator(registry)
+
+
+def _build_transport():
+    """RAO_TRANSPORT_MODE: spawn | daemon | auto (default).
+    auto probes the persistent daemon once; falls back to spawn mode."""
+    rda_dir = os.environ.get("RAO_RDA_DIR",
+                             "/home/diablo/git500/zcode_prj/rao")
+    mode = os.environ.get("RAO_TRANSPORT_MODE", "auto")
+    if mode == "spawn":
+        return SshTransport(rda_dir=rda_dir)
+    daemon_t = SshDaemonTransport(rda_dir=rda_dir)
+    if mode == "daemon":
+        return daemon_t
+    try:
+        ids = registry.list_ids()
+        if ids and daemon_t.ensure_daemon(registry.require(ids[0])):
+            log.info("transport mode: daemon (probe ok)")
+            return daemon_t
+    except Exception as exc:
+        log.warning("daemon probe failed: %s", exc)
+    log.info("transport mode: spawn (daemon unavailable)")
+    return SshTransport(rda_dir=rda_dir)
+
+
+orch = Orchestrator(registry, transport=_build_transport())
 
 
 @mcp.tool()

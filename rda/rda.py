@@ -30,11 +30,13 @@ POLL_INTERVAL_S = 0.2
 class InjectionReader(threading.Thread):
     """Reads post-goal stdin lines (steer/cancel/ping) in the background."""
 
-    def __init__(self, stream):
+    def __init__(self, stream=None):
         super(InjectionReader, self).__init__(name="rda-inject", daemon=True)
         self.stream = stream
         self.q = queue.Queue()
         self.stopped = False
+        if stream is not None:
+            self.start()
 
     def run(self):
         try:
@@ -54,8 +56,16 @@ class InjectionReader(threading.Thread):
         sys.stderr.flush()
 
 
+def stdout_sink(ev):
+    sys.stdout.write(json.dumps(ev, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
 class GoalEngine(object):
-    def __init__(self, goal):
+    """sink: callable(event_dict) — defaults to stdout JSON lines.
+    read_stdin: start the stdin InjectionReader (stdio mode only)."""
+
+    def __init__(self, goal, sink=None, read_stdin=True):
         self.goal = goal
         self.goal_id = goal["goalId"]
         self.constraints = goal.get("constraints", {})
@@ -64,8 +74,8 @@ class GoalEngine(object):
         self.step_attempts = 0
         self.max_steps = int(self.constraints.get("maxSteps",
                                                   protocol.DEFAULTS["maxSteps"]))
-        self.injections = InjectionReader(sys.stdin)
-        self.injections.start()
+        self.sink = sink or stdout_sink
+        self.injections = InjectionReader(sys.stdin if read_stdin else None)
         self.cancelled = False
         self.timed_out = False
         self.ask_responses = {}       # askId -> answer payload
@@ -76,12 +86,12 @@ class GoalEngine(object):
         self.steps_report = []
         self.artifacts = []
         self.total_retries = 0
+        self.final_status = None
 
     # --- plumbing ----------------------------------------------------------
     def emit(self, kind, data, **extra):
         ev = protocol.make_event(kind, self.goal_id, data, **extra)
-        sys.stdout.write(json.dumps(ev, ensure_ascii=False) + "\n")
-        sys.stdout.flush()
+        self.sink(ev)
         return ev
 
     def log(self, msg):
@@ -531,6 +541,7 @@ class GoalEngine(object):
                                 - (self.deadline_ms - protocol.now_ms()))}}
         self.emit(protocol.KIND_RESULT, data)
         self.injections.stopped = True
+        self.final_status = status
         return EXIT_TIMEOUT if status == protocol.ST_TIMEOUT else \
             EXIT_CANCELLED if status == protocol.ST_CANCELLED else EXIT_OK
 

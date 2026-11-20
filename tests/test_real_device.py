@@ -19,7 +19,8 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 from rao import protocol  # noqa: E402
 from rao.devices import DeviceRegistry  # noqa: E402
 from rao.orchestrator import Orchestrator  # noqa: E402
-from rao.transport import SshTransport, probe_tcp, password_of  # noqa: E402
+from rao.transport import (SshTransport, SshDaemonTransport,  # noqa: E402
+                           probe_tcp, password_of)  # noqa: E402
 
 RDA_DIR = os.environ.get("RAO_RDA_DIR", "/home/diablo/git500/zcode_prj/rao")
 DEVICE_ID = os.environ.get("RAO_TEST_DEVICE", "diablo-100")
@@ -328,3 +329,64 @@ def test_t13_report_history_and_diff(orch):
     # diff the report against itself -> no changes, no regressions
     diff = orch.run_store.diff_reports(report, report)
     assert diff["changed"] == [] and diff["regressions"] == []
+
+
+# --- v0.3: daemon mode on real device (T14-T16) ----------------------------
+@pytest.fixture(scope="module")
+def daemon_orch(tmp_path_factory):
+    runs = tmp_path_factory.mktemp("runs-daemon")
+    dt = SshDaemonTransport(rda_dir=RDA_DIR)
+    dev = reg.require(DEVICE_ID)
+    assert dt.ensure_daemon(dev), "daemon failed to start on device"
+    o = Orchestrator(registry=reg, transport=dt, runs_dir=str(runs))
+    yield o
+    try:
+        dt._exec(dev, "cd %s && python3 rda_daemon.py stop" % RDA_DIR)
+    except Exception:
+        pass
+
+
+def test_t14_daemon_goal_closed_loop(daemon_orch):
+    goal = _goal(plan={"steps": [{"id": "s1", "type": "shell",
+                                  "command": "echo daemon-real-ok",
+                                  "success": {"exitCode": 0,
+                                              "stdoutContains": "daemon-real-ok"}}]})
+    ds = daemon_orch.dispatch([DEVICE_ID], goal)
+    run = _wait(daemon_orch, ds[0]["goalId"])
+    assert run.result["status"] == "success", run.result["summary"]
+    assert getattr(run, "_last_seq", 0) >= 3  # started+step_result+result seen
+
+
+def test_t15_daemon_resume_after_link_drop(daemon_orch):
+    goal = _goal(plan={"steps": [
+        {"id": "slow", "type": "shell", "command": "sleep 8",
+         "success": {"exitCode": 0}},
+        {"id": "after", "type": "shell", "command": "echo resumed-ok",
+         "success": {"exitCode": 0, "stdoutContains": "resumed-ok"}}]})
+    ds = daemon_orch.dispatch([DEVICE_ID], goal)
+    run = daemon_orch.get_run(ds[0]["goalId"])
+    # wait until the slow step is running, then drop the SSH link
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if run.chan and any(e["kind"] == "progress" for e in run.chan.events):
+            break
+        time.sleep(0.1)
+    assert run.chan is not None, "no progress before drop"
+    time.sleep(1)
+    run.chan.close()   # simulate SSH loss mid-goal
+    assert run.wait_terminal(90)
+    assert run.state == protocol.RUN_DONE, (run.state, run.error)
+    assert run.result["status"] == "success", run.result
+    assert run._last_seq >= 4  # replay processed on attach
+
+
+def test_t16_daemon_stop(daemon_orch):
+    dt = daemon_orch.transport
+    dev = reg.require(DEVICE_ID)
+    rc, out = dt._exec(dev, "cd %s && python3 rda_daemon.py ping" % RDA_DIR)
+    assert rc == 0, "daemon should be alive before stop"
+    rc, out = dt._exec(dev, "cd %s && python3 rda_daemon.py stop" % RDA_DIR)
+    assert rc == 0
+    time.sleep(1)
+    rc, _ = dt._exec(dev, "cd %s && python3 rda_daemon.py ping" % RDA_DIR)
+    assert rc != 0, "daemon should be stopped"
