@@ -390,3 +390,30 @@ def test_t16_daemon_stop(daemon_orch):
     time.sleep(1)
     rc, _ = dt._exec(dev, "cd %s && python3 rda_daemon.py ping" % RDA_DIR)
     assert rc != 0, "daemon should be stopped"
+
+
+# --- T17 (v0.4): remote-llm planner slot on real device ---------------------
+def test_t17_remote_planner_slot(orch):
+    stub = "/home/diablo/git500/zcode_prj/out/planner-stub.py"
+    planner_cmd = json.dumps(
+        {"command": "python3 %s {objective} {recon_file}" % stub})
+    rc, _, err = _remote_exec(
+        "mkdir -p /home/diablo/.rao %s && cat > %s <<'PYEOF'\n"
+        "import json\n"
+        "print(json.dumps({'steps': [{'id': 'p1', 'type': 'shell',\n"
+        "    'command': 'echo planned-on-remote',\n"
+        "    'success': {'exitCode': 0, 'stdoutContains': 'planned-on-remote'}}]}))\n"
+        "PYEOF\n"
+        "cat > /home/diablo/.rao/planner.json <<'JEOF'\n"
+        "%s\n"
+        "JEOF" % (OUT_DIR, stub, planner_cmd))
+    assert rc == 0, err
+    goal = _goal(planner="remote-llm", workspace="/home/diablo/git500/zcode_prj")
+    ds = orch.dispatch([DEVICE_ID], goal)
+    run = _wait(orch, ds[0]["goalId"])
+    assert run.result["status"] == "success", run.result["summary"]
+    assert any("remote planner" in a for a in run.result["assumptions"])
+    kinds = [e["kind"] for e in run.chan.events]
+    assert "ask" not in kinds
+    # cleanup: remove the planner config so other tests are unaffected
+    _remote_exec("rm -f /home/diablo/.rao/planner.json")

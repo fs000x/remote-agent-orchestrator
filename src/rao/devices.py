@@ -72,5 +72,6 @@ class DeviceRegistry:
 
     @staticmethod
     def password_of(device):
-        env_key = "RAO_DEVICE_%s_PASSWORD" % device["id"].upper().replace("-", "_")
-        return os.environ.get(env_key) or device.get("auth", {}).get("password")
+        # delegates to transport.password_of (env > keyring > config chain)
+        from .transport import password_of as _pw
+        return _pw(device)

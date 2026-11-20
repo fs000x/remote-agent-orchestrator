@@ -385,6 +385,73 @@ class GoalEngine(object):
             self.assumptions.append("workspace pinned to branch %s" % branch)
         return last
 
+    def _try_remote_planner(self, facts):
+        """v0.4 planner slot: goal.planner='remote-llm' — run the configured
+        planner command (RDA_PLANNER_CMD env, else ~/.rao/planner.json
+        {"command": ...}; template with {objective} and {recon_file}); it must
+        print a plan JSON on stdout. Any failure falls back to the recon+ask
+        flow (recorded as an assumption)."""
+        cmd_tmpl = os.environ.get("RDA_PLANNER_CMD")
+        if not cmd_tmpl:
+            try:
+                pjson = os.path.join(
+                    os.environ.get("RAO_HOME") or
+                    os.path.join(os.path.expanduser("~"), ".rao"),
+                    "planner.json")
+                with open(pjson, encoding="utf-8") as fh:
+                    cmd_tmpl = json.load(fh).get("command")
+            except Exception:
+                cmd_tmpl = None
+        if not cmd_tmpl:
+            self.assumptions.append(
+                "planner=remote-llm but no planner command configured "
+                "(env RDA_PLANNER_CMD / ~/.rao/planner.json); "
+                "fell back to ask flow")
+            return None
+        import tempfile
+        recon_path = ""
+        try:
+            fd = tempfile.NamedTemporaryFile(mode="w", suffix=".json",
+                                             delete=False)
+            json.dump({"objective": self.goal.get("objective"),
+                       "recon": facts}, fd, ensure_ascii=False)
+            fd.close()
+            recon_path = fd.name
+            cmd = cmd_tmpl.replace("{objective}",
+                                   str(self.goal.get("objective")))
+            cmd = cmd.replace("{recon_file}", recon_path)
+            res = subprocess.run(cmd, shell=True, capture_output=True,
+                                 timeout=180, stdin=subprocess.DEVNULL)
+            out = (res.stdout or b"").decode("utf-8", "replace").strip()
+            if res.returncode != 0:
+                self.assumptions.append(
+                    "remote planner rc=%d; fell back to ask flow" %
+                    res.returncode)
+                return None
+            start, end = out.find("{"), out.rfind("}")
+            if start < 0 or end <= start:
+                raise ValueError("planner stdout has no JSON object")
+            plan = json.loads(out[start:end + 1])
+            synthetic = {"protocol": protocol.PROTOCOL_VERSION,
+                         "goalId": self.goal_id, "deviceId": "x",
+                         "objective": "validate planned program",
+                         "plan": plan}
+            ok, err = protocol.validate_goal(synthetic)
+            if not ok:
+                raise ValueError("planner plan invalid: %s" % err)
+            self.assumptions.append("plan produced by remote planner")
+            return plan
+        except Exception as exc:
+            self.assumptions.append(
+                "remote planner failed (%s); fell back to ask flow" % exc)
+            return None
+        finally:
+            try:
+                if recon_path and os.path.exists(recon_path):
+                    os.remove(recon_path)
+            except OSError:
+                pass
+
     def run_recon(self):
         facts = {}
         try:
@@ -457,6 +524,9 @@ class GoalEngine(object):
             if not plan or not (plan.get("steps") or []):
                 facts = self.run_recon()
                 self.emit(protocol.KIND_RECON, {"facts": facts})
+                if self.goal.get("planner") == "remote-llm":
+                    plan = self._try_remote_planner(facts)
+            if not plan or not (plan.get("steps") or []):
                 ask_id = "plan-req-1"
                 self.emit(protocol.KIND_ASK,
                           {"question": "goal has no plan; send steer with plan "
