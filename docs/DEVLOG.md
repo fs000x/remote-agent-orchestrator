@@ -52,3 +52,47 @@
 - 正本协议在 `src/rao/protocol.py`；`rda/protocol.py` 为部署副本，
   `test_protocol_sync` 防漂移，改动后跑 `scripts/sync_protocol.py`。
 - 分支：feature/remote-agent-orchestrator（main 为空基线），完成合回 main 打 tag。
+
+## 2026-11-20（续）：迭代 v0.2 / v0.3 / v0.4
+
+按用户要求把 roadmap 结构化为三个迭代并全部实现，每迭代独立分支、全量测试、
+合并 main、打 tag。
+
+### 迭代一 v0.2.0（feature/v0.2-orchestration-enhancements）
+- `ensureWorkspace`：goal 支持 {repoUrl, path, branch?}——RDA 幂等 clone 或
+  fetch+checkout+ff-merge（分叉降级为 warning 假设，不强改用户状态）。
+  踩坑：shlex 单引号在 cmd.exe 失效 → 平台感知引号助手；协议路径校验放宽为
+  双平台绝对路径（POSIX / Windows 盘符）。
+- 跨设备 DAG：`remote_dispatch_dag`/`remote_dag_status`——拓扑调度、
+  success/lenient 双策略、策略违规传递跳过、环拒绝、dag 记录落盘。
+  踩坑：策略违规（partial 依赖）曾卡死 pending——补传播规则。
+- 报告历史/对比：`remote_reports(list|get|diff)`，diff 含 regressions 判定。
+- 真机验收新增 T11（远端 clone）/T12（DAG 链）/T13（报告 diff）。52 测试。
+
+### 迭代二 v0.3.0（feature/v0.3-rda-daemon）
+- rda_daemon.py：常驻 daemon（TCP loopback + token，daemon.json 0600 +
+  心跳），goal 事件缓冲 + 落盘 + attach 重放（seq 序号），inject/status/list/
+  shutdown；client-bridge（os.read stdin 避免读预缓冲；read1 socket 泵避免
+  BufferedReader 凑满 4096 才返回）。
+- 传输层双通道：TcpDaemonChannel（本地测试直连）+ SshDaemonChannel（SSH 桥），
+  共享 _DaemonLink 行框架（握手与读流共用缓冲——修复旧实现丢弃同 chunk 后续行）。
+- GoalRun._pump_daemon：断线 → 重连 + attach + seq 去重重接循环，预算
+  RAO_RESUME_MAX；RAO_TRANSPORT_MODE auto|spawn|daemon（auto 探测回退）。
+  真机验收 T14（daemon 闭环）/T15（断线重接恢复）/T16（stop）。59 测试。
+  踩坑：远端 cmd_start 未建 ~/.rao 目录；ping 的 _local_client 超时异常未捕获
+  导致永远"失败"→ ensure_daemon 反复拉孤儿 daemon；bridge BufferedReader 读流
+  阻塞——全部修复并记录。
+
+### 迭代三 v0.4.0（feature/v0.4-hardening）
+- 凭据链：env > OS keyring（可选依赖，缺失优雅降级）> 配置文件；
+  devices 与 transport 统一走一条链。
+- 规划器插槽：goal.planner='remote-llm'——RDA 优先跑 RDA_PLANNER_CMD env 或
+  ~/.rao/planner.json 下发的命令（模板 {objective}/{recon_file}），产出的
+  plan 校验后执行；任何失败回退 recon+ask 并记录假设。真机 T17 端到端。
+  68 测试全绿。
+
+### 留给下一棒的话
+- 真机偶发（<5%）在 daemon 测试上多为时序竞态，已修三处（见上），如再遇到
+  先看 serve-stderr.log 与 RAO_WIRE_DEBUG=1 的 wire 日志。
+- MCP 工具面仍是 6 个（DAG/报告/daemon 由现有工具组合覆盖）；如需独立暴露
+  dispatch_dag 给主 agent，在 server.py 加薄封装即可。

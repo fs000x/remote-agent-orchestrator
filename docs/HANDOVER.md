@@ -4,8 +4,9 @@
 
 ## 1. 当前状态（2026-11-20）
 
-**v1 功能全部实现并经测试验证。** 39 个测试用例全绿（单元 21 + RDA 本地协议 7 +
-同步守卫 1 + 真机集成 9 + MCP stdio 集成 1）。
+**迭代 v0.2/v0.3/v0.4 全部实现并经测试验证。** 68 个测试用例全绿
+（单元 21+2 / RDA 本地 7 / DAG+ensureWorkspace+报告 9 / daemon 4 / 真机 17
+[T1-T17] / MCP stdio 1 / 同步守卫 1 / v0.4 凭据+规划器 8）。
 
 | 交付物 | 位置 | 状态 |
 |---|---|---|
@@ -14,11 +15,13 @@
 | SSH Transport | src/rao/transport.py | ✅ 真机验证 |
 | RDA 引擎 | rda/rda.py | ✅ 已部署 diablo-100:/home/diablo/git500/zcode_prj/rao |
 | Skill | skills/cross-device-orchestrator/ | ✅ 已部署 ~/.zcode/skills/（ZCode 已发现） |
-| 测试 | tests/（39 cases） | ✅ 全绿，含 T1-T10 真机验收表 |
+| 测试 | tests/（68 cases） | ✅ 全绿，含 T1-T17 真机验收表 |
 | 运行记录 | runs/（gitignore） | 每次派发自动落盘 |
 
-**Git**：分支 `feature/remote-agent-orchestrator`，合入 `main` 后打 tag `v0.1.0`
-（合并动作见 §5）。
+**Git**：main 上 tag v0.1.0→v0.2.0→v0.3.0→v0.4.0（各迭代独立 feature 分支合并）。
+roadmap 已全部消化：§11.2 daemon 化（v0.3）、§11.3 DAG（v0.2）、§11.4 规划器
+插槽（v0.4）、§11.5 keyring（v0.4）、§11.6 报告对比（v0.2）。唯一剩余 §11.1
+R3 源码 PR 路线（需改 ZCode 源码提上游，超出本插件仓库边界）。
 
 ## 2. 怎么跑（30 秒上手）
 
@@ -40,10 +43,12 @@ cross-device-orchestrator 技能。注意：本交接发生的会话是配置写
 
 ## 3. 已知限制（都是设计内妥协，非 bug）
 
-1. **RDA 无常驻**：每 goal 一次性进程，SSH 断连 = goal 中断（保留已收事件）。
+1. ~~RDA 无常驻~~ **已实现（v0.3）**：`RAO_TRANSPORT_MODE=auto` 默认探测 daemon，
+断线重接 + attach 重放（seq 去重）；spawn 模式仍作回退。
 2. **密码明文**在 config/devices.json（gitignore 挡住版本控制）；env 覆盖
    `RAO_DEVICE_<ID>_PASSWORD` 优先。OS keyring 在 roadmap。
-3. **forbidden 黑名单是软约束**（子串匹配），不是沙箱。
+3. **forbidden 黑名单是软约束**（子串匹配），不是沙箱；硬隔离仍在 roadmap。
+   凭据链已入 keyring（v0.4），env/config 仍可用。
 4. **单 device 并发默认 2**（该机 2 核）；全局默认 5。可在 devices.json 调。
 5. **MCP server 进程若退出**，in-flight goal 的内存态丢失；落盘的 runs/*.json 仍在。
 6. Windows 本地跑 RDA 仅用于测试（rda.py 兼容 POSIX 为主，如 /proc 采集有 try/except）。
@@ -67,10 +72,11 @@ cross-device-orchestrator 技能。注意：本交接发生的会话是配置写
 
 1. **用户侧验收**：重启 ZCode → 主 agent 实际派发一个真实任务（非测试命令）
    → 检查 runs/ 报告。这是 v1 的最后一环（自动化测试已覆盖，人工场景未跑）。
-2. **接第二台设备**：devices.json 加条目 + deploy_rda.py，即可验证真·跨设备并行
-   （当前并行测试用同设备双 goal 模拟）。
+2. **接第二台设备**：devices.json 加条目 + deploy_rda.py + keyring 存凭据，即可
+   验证真·跨设备并行与 DAG（当前并行测试用同设备双 goal 模拟）。
 3. **R3 正式路线**（DESIGN.md §11.1）：session-control 上远端链路的源码 PR；
-   Transport 接口已隔离，届时实现 `R3SessionControlTransport` 与 SSH 垫片并存。
+   Transport 接口已隔离，届时实现 `R3SessionControlTransport` 与 SSH/daemon 垫片
+   并存。这是唯一未实现的 roadmap 项。
 4. roadmap 其余：RDA daemon 化 / 设备间 DAG / 远端 LLM 规划器 / keyring / 硬沙箱。
 
 ## 6. 关键文件速查

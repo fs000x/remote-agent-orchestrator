@@ -315,15 +315,17 @@ os/uname、python 版本、磁盘、内存、CPU 核数、workspace 目录摘要
 
 ---
 
-## 11. Roadmap（明确不做进 v1）
+## 11. Roadmap（v1 原始边界；✅ = 已在迭代中实现）
 
 1. R3 正式路线：session-control 上远端链路（源码 PR），Transport 接口已隔离，届时新增
-   `R3SessionControlTransport` 与垫片并存。
-2. RDA daemon 化 + 心跳常驻 + 断线重接。
-3. 设备间 DAG（goal 依赖声明与拓扑执行）。
-4. 远端独立规划器（`planner: "remote-llm"`，接远端 LLM CLI）。
-5. 凭据入 OS keyring；命令硬沙箱（bubblewrap/sandbox-ssh 思路）。
-6. 回归对比与报告版本管理。
+   `R3SessionControlTransport` 与垫片并存。**唯一未实现项（需改 ZCode 源码提上游）。**
+2. ✅ RDA daemon 化 + 心跳常驻 + 断线重接（v0.3：rda_daemon + attach/seq 重放 +
+   RAO_TRANSPORT_MODE=auto）。
+3. ✅ 设备间 DAG（v0.2：remote_dispatch_dag，success/lenient 策略 + 环拒绝）。
+4. ✅ 远端独立规划器插槽（v0.4：planner='remote-llm'，RDA_PLANNER_CMD /
+   ~/.rao/planner.json，失败回退 ask 流）。
+5. ✅ 凭据入 OS keyring（v0.4：env > keyring > config 链）；命令硬沙箱仍为后续项。
+6. ✅ 回归对比与报告版本管理（v0.2：remote_reports list/get/diff + regressions）。
 
 ---
 
