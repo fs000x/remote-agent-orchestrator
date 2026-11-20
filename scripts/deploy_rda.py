@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 from rao.devices import DeviceRegistry  # noqa: E402
 from rao.transport import password_of  # noqa: E402
 
-RDA_FILES = ["rda.py", "protocol.py"]
+RDA_FILES = ["rda.py", "protocol.py", "rda_daemon.py"]
 
 
 def main():
