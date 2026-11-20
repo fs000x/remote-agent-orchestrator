@@ -144,7 +144,10 @@ def validate_goal(goal):
             return False, "constraints.forbidden entries must be strings"
     planner = (goal.get("plan") or {}).get("planner", "main-agent")
     if planner != "main-agent":
-        return False, "plan.planner must be 'main-agent' in v1"
+        return False, "plan.planner must be 'main-agent' (steered plans)"
+    gp = goal.get("planner", "main-agent")
+    if gp not in ("main-agent", "remote-llm"):
+        return False, "goal.planner must be 'main-agent' or 'remote-llm'"
     ews = goal.get("ensureWorkspace")
     if ews is not None:
         if not isinstance(ews, dict):

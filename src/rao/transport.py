@@ -290,9 +290,20 @@ def _drain_lines(buf, final=False):
 
 
 def password_of(device):
+    """Credential chain (v0.4): env var > OS keyring (optional) > config file."""
     import os
     env_key = "RAO_DEVICE_%s_PASSWORD" % device["id"].upper().replace("-", "_")
-    return os.environ.get(env_key) or device.get("auth", {}).get("password")
+    pw = os.environ.get(env_key)
+    if pw:
+        return pw
+    try:
+        import keyring  # optional dependency
+        pw = keyring.get_password("rao", device["id"])
+        if pw:
+            return pw
+    except Exception:
+        pass  # keyring not installed / backend unavailable
+    return device.get("auth", {}).get("password")
 
 
 class SshTransport:
