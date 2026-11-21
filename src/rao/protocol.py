@@ -148,6 +148,11 @@ def validate_goal(goal):
     gp = goal.get("planner", "main-agent")
     if gp not in ("main-agent", "remote-llm"):
         return False, "goal.planner must be 'main-agent' or 'remote-llm'"
+    backend = goal.get("agent", "builtin")
+    if backend not in ("builtin", "claude"):
+        return False, "goal.agent must be 'builtin' or 'claude' (v0.6)"
+    if backend == "claude" and "plan" in goal and goal["plan"] is not None:
+        return False, "goal.agent='claude' executes the whole objective; drop plan"
     ews = goal.get("ensureWorkspace")
     if ews is not None:
         if not isinstance(ews, dict):

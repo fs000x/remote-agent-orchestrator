@@ -290,7 +290,8 @@ def _drain_lines(buf, final=False):
 
 
 def password_of(device):
-    """Credential chain (v0.4): env var > OS keyring (optional) > config file."""
+    """Credential chain: env > OS keyring > config file > ZCode store (v0.6,
+    only for devices imported from ZCode; opt-out RAO_REUSE_ZCODE_CREDS=0)."""
     import os
     env_key = "RAO_DEVICE_%s_PASSWORD" % device["id"].upper().replace("-", "_")
     pw = os.environ.get(env_key)
@@ -303,7 +304,17 @@ def password_of(device):
             return pw
     except Exception:
         pass  # keyring not installed / backend unavailable
-    return device.get("auth", {}).get("password")
+    pw = device.get("auth", {}).get("password")
+    if pw:
+        return pw
+    if device.get("zcodeProfileId") and \
+            os.environ.get("RAO_REUSE_ZCODE_CREDS", "1") != "0":
+        try:
+            from .zcode_store import get_profile_password
+            return get_profile_password(device["zcodeProfileId"])
+        except Exception:
+            return None
+    return None
 
 
 def _open_paramiko_client(device):
