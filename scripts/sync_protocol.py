@@ -5,6 +5,6 @@ import shutil
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 src = os.path.join(ROOT, "src", "rao", "protocol.py")
-dst = os.path.join(ROOT, "rda", "protocol.py")
+dst = os.path.join(ROOT, "src", "rao", "runtime", "protocol.py")
 shutil.copyfile(src, dst)
 print("synced %s -> %s" % (src, dst))

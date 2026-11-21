@@ -16,6 +16,8 @@ from rao.devices import DeviceRegistry  # noqa: E402
 from rao.transport import password_of  # noqa: E402
 
 RDA_FILES = ["rda.py", "protocol.py", "rda_daemon.py"]
+RUNTIME_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "src", "rao", "runtime")
 
 
 def main():
@@ -38,7 +40,7 @@ def main():
         _, out, err = client.exec_command("mkdir -p %s" % rda_dir)
         out.channel.recv_exit_status()
         sftp = client.open_sftp()
-        local_dir = os.path.join(ROOT, "rda")
+        local_dir = RUNTIME_DIR
         for name in RDA_FILES:
             local = os.path.join(local_dir, name)
             remote = "%s/%s" % (rda_dir, name)

@@ -15,7 +15,7 @@ import time
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RDA = os.path.join(ROOT, "rda", "rda.py")
+RDA = os.path.join(ROOT, "src", "rao", "runtime", "rda.py")
 PY = sys.executable
 
 

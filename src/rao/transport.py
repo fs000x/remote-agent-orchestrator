@@ -306,15 +306,55 @@ def password_of(device):
     return device.get("auth", {}).get("password")
 
 
+def _open_paramiko_client(device):
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(device["host"], port=int(device.get("port", 22)),
+                   username=device["user"], password=password_of(device),
+                   timeout=10, allow_agent=False, look_for_keys=False)
+    return client
+
+
 class SshTransport:
     """Real transport: one SSH connection per goal."""
 
     def __init__(self, rda_dir):
         self.rda_dir = rda_dir
 
-    def open_session(self, goal_id, device, goal_line):
+    def _exec(self, device, cmd, timeout_s=15):
+        client = _open_paramiko_client(device)
+        try:
+            _, out, err = client.exec_command(cmd, timeout=timeout_s)
+            rc = out.channel.recv_exit_status()
+            return rc, out.read().decode("utf-8", "replace")
+        finally:
+            client.close()
+
+    def _put_files(self, device, rda_dir, mapping):
+        client = _open_paramiko_client(device)
+        try:
+            client.exec_command("mkdir -p %s" % rda_dir)[1].channel.recv_exit_status()
+            sftp = client.open_sftp()
+            uploaded = []
+            for name, local_path in mapping.items():
+                sftp.put(local_path, "%s/%s" % (rda_dir, name))
+                uploaded.append(name)
+            sftp.close()
+            return uploaded
+        finally:
+            client.close()
+
+    def provision(self, device):
+        from .provision import ensure_rda
+        r = ensure_rda(self, device, self.rda_dir)
+        if r.get("error"):
+            raise TransportError("RAO_DEVICE_UNREACHABLE",
+                                 "provision failed: %s" % r["error"])
+        return r
+
+    def open_session(self, goal_id, device, goal_obj):
         chan = SshGoalChannel(goal_id, device, password_of(device), self.rda_dir)
-        chan.connect_and_start(goal_line)
+        chan.connect_and_start(goal_obj)
         return chan
 
 
@@ -804,18 +844,35 @@ class SshDaemonTransport:
 
     def _exec(self, device, cmd, timeout_s=15):
         """One-shot SSH exec; returns (rc, stdout)."""
-        client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client = _open_paramiko_client(device)
         try:
-            client.connect(device["host"], port=int(device.get("port", 22)),
-                           username=device["user"],
-                           password=self._password_of(device),
-                           timeout=10, allow_agent=False, look_for_keys=False)
             _, out, err = client.exec_command(cmd, timeout=timeout_s)
             rc = out.channel.recv_exit_status()
             return rc, out.read().decode("utf-8", "replace")
         finally:
             client.close()
+
+    def _put_files(self, device, rda_dir, mapping):
+        client = _open_paramiko_client(device)
+        try:
+            client.exec_command("mkdir -p %s" % rda_dir)[1].channel.recv_exit_status()
+            sftp = client.open_sftp()
+            uploaded = []
+            for name, local_path in mapping.items():
+                sftp.put(local_path, "%s/%s" % (rda_dir, name))
+                uploaded.append(name)
+            sftp.close()
+            return uploaded
+        finally:
+            client.close()
+
+    def provision(self, device):
+        from .provision import ensure_rda
+        r = ensure_rda(self, device, self.rda_dir)
+        if r.get("error"):
+            raise TransportError("RAO_DEVICE_UNREACHABLE",
+                                 "provision failed: %s" % r["error"])
+        return r
 
     def ensure_daemon(self, device):
         """Ping the daemon; start it if not alive. Returns True if alive."""
