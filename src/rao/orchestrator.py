@@ -231,10 +231,12 @@ class GoalRun:
                         return
                     if not self.chan.alive():
                         if now - last_event_ms > 2 * PUMP_SLICE_S:
+                            print("[DBG-LOST] silence+dead at seq-last=%s" % self._last_seq)
                             raise ChannelLost()
                         # give a dead link a final drain window
                         ev2, idx2 = self.chan.wait_event(idx, PUMP_SLICE_S)
                         if ev2 is None:
+                            print("[DBG-LOST] dead-drain-empty at seq-last=%s" % self._last_seq)
                             raise ChannelLost()
                         idx = idx2 - 1  # reprocess next loop
             except ChannelLost:
@@ -267,24 +269,52 @@ class GoalRun:
         }.get(status, protocol.RUN_FAILED)
 
     def _force_cancel(self, reason):
-        if self.chan is None or self.chan.closed:
-            return
-        self.chan.write_line({"type": "cancel", "reason": reason})
-        exited = self.chan.wait_exit(KILL_GRACE_S)
-        if exited is None:
-            self.chan.kill()
+        # v0.9 control-plane cancel via a fresh on-device connection when the
+        # transport supports it; spawn mode keeps the in-band stdin write.
+        if hasattr(self.orch.transport, "steer"):
+            try:
+                self.orch.transport.steer(
+                    self.device, self.goal_id,
+                    {"type": "cancel", "reason": reason})
+            except Exception:
+                pass
+        elif self.chan is not None and not self.chan.closed:
+            self.chan.write_line({"type": "cancel", "reason": reason})
+        if self.chan is not None:
+            exited = self.chan.wait_exit(KILL_GRACE_S)
+            if exited is None:
+                self.chan.kill()
         self.error = reason
 
     # --- control API (called from MCP tools) --------------------------------
     def steer(self, message=None, ask_id=None, answer=None):
-        if self.chan is None:
-            return False
         payload = {"type": "steer"}
         if ask_id is not None:
             payload["askId"] = ask_id
             payload["answer"] = answer
         else:
             payload["message"] = message
+        # v0.9: control-plane inject via a fresh connection when available —
+        # immune to the goal bridge's state (the event bridge has known races)
+        if hasattr(self.orch.transport, "steer"):
+            import time as _time
+            for _attempt in range(3):        # SSH round-trip may race a fast goal
+                t0 = _time.monotonic()
+                try:
+                    ok = self.orch.transport.steer(self.device, self.goal_id,
+                                                   payload)
+                    print("[steer-dbg] attempt=%d ok=%s t+%.1fs" % (
+                        _attempt, ok, _time.monotonic() - t0), flush=True)
+                    if ok:
+                        return True
+                except Exception as exc:
+                    print("[steer-dbg] attempt=%d exc=%r" % (_attempt, exc),
+                          flush=True)
+                if self.is_terminal():
+                    return False
+                _time.sleep(1.0)
+        if self.chan is None:
+            return False
         return self.chan.write_line(payload)
 
     def cancel(self, reason="user requested"):
@@ -421,6 +451,17 @@ class RunStore:
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(report, fh, ensure_ascii=False, indent=1)
         return path
+
+    def load_goal_record(self, goal_id):
+        """Load a persisted run record (goals from earlier processes)."""
+        path = os.path.join(self.runs_dir, "%s.json" % goal_id)
+        if not os.path.isfile(path):
+            return None
+        try:
+            with open(path, encoding="utf-8") as fh:
+                return json.load(fh)
+        except (OSError, ValueError):
+            return None
 
     def save_dag(self, dag):
         path = os.path.join(self.runs_dir, "dag-%s.json" % dag.dag_id)
@@ -599,10 +640,10 @@ class Orchestrator:
 
     # --- dispatch ----------------------------------------------------------
     def dispatch(self, device_ids, goal):
-        g = dict(goal)
-        g.setdefault("protocol", protocol.PROTOCOL_VERSION)
-        # validate a probe clone: goalId/deviceId are per-device values filled below
-        probe = dict(g)
+        # prepare ONCE (protocol backfilled); every device deepcopies this base
+        prepared = dict(goal)
+        prepared.setdefault("protocol", protocol.PROTOCOL_VERSION)
+        probe = dict(prepared)
         if not probe.get("goalId"):
             probe["goalId"] = "validation-probe"
         if not probe.get("deviceId"):
@@ -613,7 +654,7 @@ class Orchestrator:
         dispatches = []
         for did in device_ids:
             device = self.registry.require(did)  # KeyError -> tool surfaces it
-            g = copy.deepcopy(goal)
+            g = copy.deepcopy(prepared)
             if not g.get("goalId"):
                 g["goalId"] = protocol.new_goal_id()
             g["deviceId"] = did
@@ -698,8 +739,24 @@ class Orchestrator:
         for gid in goal_ids:
             run = self.get_run(gid)
             if run is None:
-                matrix.append({"goalId": gid, "status": "unknown",
-                               "summary": "no such goalId"})
+                # goal from an earlier process: fall back to persisted record
+                rec = self.run_store.load_goal_record(gid)
+                if rec:
+                    res = rec.get("result") or {}
+                    matrix.append({
+                        "goalId": gid,
+                        "deviceId": (rec.get("goal") or {}).get("deviceId"),
+                        "status": res.get("status", rec.get("state")),
+                        "summary": res.get("summary"),
+                        "steps": res.get("steps", []),
+                        "artifacts": res.get("artifacts", []),
+                        "assumptions": res.get("assumptions", []),
+                        "steerNotes": res.get("steerNotes", []),
+                        "metrics": res.get("metrics", {}),
+                    })
+                else:
+                    matrix.append({"goalId": gid, "status": "unknown",
+                                   "summary": "no such goalId"})
                 continue
             remaining = max(0.5, deadline - time.monotonic())
             run.wait_terminal(remaining)

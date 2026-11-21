@@ -29,6 +29,7 @@ Wire protocol (JSON lines over TCP; FIRST line must be auth):
 Python >= 3.8, stdlib only.
 """
 import argparse
+import hashlib
 import json
 import os
 import secrets
@@ -87,6 +88,7 @@ class GoalRecord(object):
         self.lock = threading.Lock()
         self.subscribers = []   # list of _send(callable) sinks
         self.engine = None
+        self.pending_injections = []   # injections arriving before engine ready
 
     def sink(self, ev):
         """GoalEngine event sink: buffer + persist + fan out."""
@@ -169,6 +171,9 @@ class DaemonState(object):
             try:
                 engine = GoalEngine(goal, sink=rec.sink, read_stdin=False)
                 rec.engine = engine
+                for payload in rec.pending_injections:
+                    engine.injections.q.put(payload)
+                rec.pending_injections = []
                 code = engine.run()
             except Exception as exc:
                 log("engine crash %s: %r" % (gid, exc))
@@ -236,6 +241,7 @@ class Handler(socketserver.StreamRequestHandler):
                 continue
             cmd = msg.get("cmd")
             try:
+                log("handler: cmd=%s goalId=%s" % (cmd, msg.get("goalId", msg.get("goal", {}).get("goalId", "-"))))
                 if cmd == "ping":
                     self._send({"type": "pong", "ts": protocol.now_ms()})
                 elif cmd == "submit":
@@ -288,12 +294,29 @@ class Handler(socketserver.StreamRequestHandler):
                 elif cmd == "inject":
                     gid = msg["goalId"]
                     rec = self.server.daemon.goals.get(gid)
-                    if rec is None or rec.engine is None:
-                        self._send({"type": "error",
-                                    "message": "unknown or finished goal"})
+                    if rec is None:
+                        self._send({"type": "injected", "goalId": gid,
+                                    "queued": "dropped",
+                                    "reason": "unknown goalId",
+                                    "ack": msg.get("ack")})
                         continue
-                    rec.engine.injections.q.put(msg.get("payload", {}))
-                    self._send({"type": "injected", "goalId": gid})
+                    payload = msg.get("payload", {})
+                    if rec.status != "running":
+                        self._send({"type": "injected", "goalId": gid,
+                                    "queued": "dropped",
+                                    "reason": "goal already finished",
+                                    "ack": msg.get("ack")})
+                        continue
+                    if rec.engine is None:
+                        # engine thread not started yet: hold and flush on start
+                        with rec.lock:
+                            rec.pending_injections.append(payload)
+                        self._send({"type": "injected", "goalId": gid,
+                                    "queued": "pending", "ack": msg.get("ack")})
+                        continue
+                    rec.engine.injections.q.put(payload)
+                    self._send({"type": "injected", "goalId": gid,
+                                "queued": "delivered", "ack": msg.get("ack")})
                 elif cmd == "shutdown":
                     self._send({"type": "bye"})
                     self.server.daemon.shutting_down.set()
@@ -310,6 +333,7 @@ class Handler(socketserver.StreamRequestHandler):
                     return
 
     def finish(self):
+        log("handler finish: connection closing")
         # unsubscribe this connection's sends from any live goals
         for gid in getattr(self, "_live_goal_ids", set()):
             rec = self.server.daemon.goals.get(gid)
@@ -337,9 +361,11 @@ def cmd_serve(port):
     state = DaemonState(token)
     server = DaemonServer(("127.0.0.1", port), Handler)
     server.daemon = state
+    code_hash = hashlib.sha256(
+        open(os.path.abspath(__file__), "rb").read()).hexdigest()
     with open(DAEMON_JSON, "w", encoding="utf-8") as fh:
         json.dump({"pid": os.getpid(), "port": port, "token": token,
-                   "version": DAEMON_VERSION,
+                   "version": DAEMON_VERSION, "codeHash": code_hash,
                    "startedMs": protocol.now_ms()}, fh)
     if os.name != "nt":
         os.chmod(DAEMON_JSON, 0o600)
@@ -445,6 +471,33 @@ def cmd_ping():
     return 1
 
 
+def cmd_inject_one(goal_id, payload_json):
+    """v0.9 control-plane: one-shot inject over a fresh local connection.
+    Prints the receipt JSON line; exit 0 only when queued == delivered."""
+    dj = load_daemon_json()
+    if not dj:
+        print("not running")
+        return 1
+    try:
+        payload = json.loads(payload_json)
+        lines = _local_client(dj["port"], dj["token"],
+                              [{"cmd": "inject", "goalId": goal_id,
+                                "payload": payload}], read_timeout_s=5)
+    except Exception as exc:
+        print(json.dumps({"type": "error", "message": str(exc)}))
+        return 1
+    receipt = next((m for m in lines if m.get("type") == "injected"), None)
+    if receipt is None:
+        err = next((m for m in lines if m.get("type") == "error"), None)
+        print(json.dumps({"type": "injected", "goalId": goal_id,
+                          "queued": "dropped",
+                          "reason": (err or {}).get("message",
+                                                    "no receipt")}))
+        return 1
+    print(json.dumps(receipt, ensure_ascii=False))
+    return 0 if receipt.get("queued") == "delivered" else 1
+
+
 def cmd_stop():
     dj = load_daemon_json()
     if not dj:
@@ -465,36 +518,51 @@ def cmd_stop():
 
 
 def cmd_bridge():
-    """stdio <-> daemon TCP bridge (remote side of the SSH channel)."""
+    """stdio <-> daemon TCP bridge (remote side of the SSH channel).
+
+    v0.9 fix: the socket reader and writer use SEPARATE file objects
+    (a shared makefile("rwb") is not thread-safe — the first client->daemon
+    write after submit could corrupt the reader and silently freeze the
+    event stream). If the read pump dies, the bridge EXITS so the SSH
+    channel EOFs and the orchestrator reconnects (attach) instead of
+    hanging on a dead-but-alive channel."""
     dj = load_daemon_json()
     if not (dj and _alive(dj)):
+        os.write(2, ("[bridge] startup check failed: dj=%s alive=%s\n"
+                     % (bool(dj), bool(dj and _alive(dj)))).encode())
         print(json.dumps({"type": "error",
                           "message": "daemon not running"}))
         return 3
     sock = socket.create_connection(("127.0.0.1", dj["port"]), timeout=5)
-    f = sock.makefile("rwb")
-    f.write((json.dumps({"cmd": "auth", "token": dj["token"]}) + "\n")
-            .encode("utf-8"))
-    f.flush()
-    ready = f.readline()
+    sock.settimeout(None)   # pump reads block indefinitely (event stream)
+    f_read = sock.makefile("rb")
+    f_write = sock.makefile("wb")
+    f_write.write((json.dumps({"cmd": "auth", "token": dj["token"]}) + "\n")
+                  .encode("utf-8"))
+    f_write.flush()
+    ready = f_read.readline()
     sys.stdout.write(ready.decode("utf-8", "replace"))
     sys.stdout.flush()
 
     def pump_socket_to_stdout():
         try:
             while True:
-                chunk = f.read1(4096)   # read1: return as soon as ANY data
+                chunk = f_read.read1(4096)   # read1: return as soon as ANY data
                 if not chunk:
                     break
                 sys.stdout.write(chunk.decode("utf-8", "replace"))
                 sys.stdout.flush()
-        except Exception:
-            pass
+        except Exception as exc:
+            os.write(2, ("[bridge] read pump died: %r\n" % exc).encode())
         finally:
+            os.write(2, b"[bridge] pump exit (EOF from daemon or error)\n")
+            # reader lost the daemon stream: kill the bridge so the SSH
+            # channel EOFs and the orchestrator reconnects with attach
             try:
-                sys.stdin.close()
+                sock.close()
             except Exception:
                 pass
+            os._exit(3)
 
     threading.Thread(target=pump_socket_to_stdout, daemon=True).start()
     # stdin: os.read avoids Python's read-ahead buffering, which would hold
@@ -505,14 +573,14 @@ def cmd_bridge():
             chunk = os.read(0, 4096)
             if not chunk:
                 if buf:
-                    f.write(buf)
-                    f.flush()
+                    f_write.write(buf)
+                    f_write.flush()
                 break
             buf += chunk
             while b"\n" in buf:
                 ln, buf = buf.split(b"\n", 1)
-                f.write(ln + b"\n")
-                f.flush()
+                f_write.write(ln + b"\n")
+                f_write.flush()
     except Exception:
         pass
     try:
@@ -533,6 +601,10 @@ def main():
     sub.add_parser("ping")
     sub.add_parser("stop")
     sub.add_parser("client-bridge")
+    p_inj = sub.add_parser("inject-one")
+    p_inj.add_argument("--goal-id", required=True)
+    p_inj.add_argument("--payload", help="payload JSON (steer/cancel/ping)")
+    p_inj.add_argument("--payload-b64", help="payload JSON, base64")
     args = ap.parse_args()
     if args.home:
         _set_home(args.home)
@@ -544,6 +616,12 @@ def main():
         return cmd_ping()
     if args.cmd == "stop":
         return cmd_stop()
+    if args.cmd == "inject-one":
+        import base64 as _b64
+        payload_json = args.payload
+        if args.payload_b64:
+            payload_json = _b64.b64decode(args.payload_b64).decode("utf-8")
+        return cmd_inject_one(args.goal_id, payload_json)
     if args.cmd == "client-bridge":
         return cmd_bridge()
     ap.print_help()

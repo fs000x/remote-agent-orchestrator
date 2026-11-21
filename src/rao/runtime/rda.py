@@ -90,6 +90,7 @@ class GoalEngine(object):
         self.artifacts = []
         self.total_retries = 0
         self.final_status = None
+        self.started_ms = protocol.now_ms()
 
     # --- plumbing ----------------------------------------------------------
     def emit(self, kind, data, **extra):
@@ -700,7 +701,7 @@ class GoalEngine(object):
                     failed_required = True
                     break
                 # new steer run: directives may have appeared
-                if len(queue_steps) < len(steps) + len(self.extra_runs):
+                if len(queue_steps) != len(steps) + len(self.extra_runs):
                     queue_steps = steps + self.extra_runs
 
             if self.cancelled:
@@ -733,8 +734,7 @@ class GoalEngine(object):
                 "metrics": {"stepAttempts": self.step_attempts,
                             "retries": self.total_retries,
                             "durationMs": max(
-                                0, protocol.DEFAULTS["timeoutMs"]
-                                - (self.deadline_ms - protocol.now_ms()))}}
+                                0, protocol.now_ms() - self.started_ms)}}
         self.emit(protocol.KIND_RESULT, data)
         self.injections.stopped = True
         self.final_status = status

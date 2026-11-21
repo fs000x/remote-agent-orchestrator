@@ -506,6 +506,9 @@ class _DaemonLink(object):
         self.closed = False
         self._line_buf = b""     # shared line buffer: handshake AND reader
         self._line_lock = threading.Lock()
+        self._acks = {}          # ackId -> injected reply (pump stores)
+        self._ack_seq = 0
+        self._ack_cond = threading.Condition()
         self._close_lock = threading.Lock()
         self._event_cond = threading.Condition()
         self.supports_resume = True
@@ -601,6 +604,10 @@ class _DaemonLink(object):
                                  "steps": [], "artifacts": [],
                                  "assumptions": [], "metrics": {}}))
                     return
+                elif mtype == "injected":
+                    with self._ack_cond:
+                        self._acks[msg.get("ack")] = msg
+                        self._ack_cond.notify_all()
                 elif mtype == "error":
                     self.stderr_text.append("[daemon error] %s"
                                             % msg.get("message"))
@@ -637,16 +644,33 @@ class _DaemonLink(object):
             time.sleep(0.1)
         return None
 
-    def write_line(self, obj):
+    def write_line(self, obj, wait_ack_s=5.0):
+        """Send an injection and WAIT for the daemon receipt.
+
+        Returns True only when the daemon reports the payload was delivered
+        to the engine queue (or held as pending for a not-yet-started engine);
+        'dropped' / timeout / write failure return False — the caller sees
+        delivery truth instead of a blind pipe write."""
         if self.closed:
             return False
+        with self._ack_cond:
+            self._ack_seq += 1
+            ack_id = "ack-%d" % self._ack_seq
         try:
             self._send_line({"cmd": "inject", "goalId": self.goal_id,
-                             "payload": obj})
-            return True
+                             "payload": obj, "ack": ack_id})
         except Exception as exc:
             log.warning("daemon inject failed goal=%s: %s", self.goal_id, exc)
             return False
+        deadline = time.monotonic() + wait_ack_s
+        with self._ack_cond:
+            while ack_id not in self._acks:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or self.closed:
+                    return False
+                self._ack_cond.wait(remaining)
+            reply = self._acks.pop(ack_id)
+        return reply.get("queued") in ("delivered", "pending")
 
     def alive(self):
         raise NotImplementedError
@@ -852,27 +876,85 @@ class SshDaemonTransport:
             client.close()
 
     def provision(self, device):
-        from .provision import ensure_rda
-        r = ensure_rda(self, device, self.rda_dir)
+        """Upload stale runtime files AND restart the daemon when its code
+        changed on disk (a running daemon keeps old in-memory code)."""
+        from .provision import ensure_rda, local_hashes
+        rd = device.get("rdaDir") or self.rda_dir
+        r = ensure_rda(self, device, rd)
         if r.get("error"):
             raise TransportError("RAO_DEVICE_UNREACHABLE",
                                  "provision failed: %s" % r["error"])
+        # v0.9: restart the daemon when its in-memory code differs from the
+        # local runtime. Detection via codeHash recorded in daemon.json at
+        # serve start (old daemons without the field are treated as stale).
+        import time
+        local_hash = local_hashes().get("rda_daemon.py")
+        ping = "cd %s && python3 rda_daemon.py ping" % rd
+        rc_p, _ = self._exec(device, ping)
+        if rc_p == 0:
+            rc_d, out_d = self._exec(
+                device,
+                'python3 -c "import json,os;print(json.load(open(os.path.expanduser'
+                '(\"~/.rao/daemon.json\"))).get(\"codeHash\",\"\"))"')
+            running_hash = out_d.strip()
+            if running_hash != local_hash:
+                self._exec(device, "cd %s && python3 rda_daemon.py stop" % rd)
+                for _ in range(15):
+                    rc_p, _ = self._exec(device, ping)
+                    if rc_p != 0:
+                        break
+                    time.sleep(0.3)
+                rc_p = 1   # force the start below
+        else:
+            rc_p = 1       # daemon down: force the start below
+        if rc_p != 0:
+            self._exec(device, "cd %s && python3 rda_daemon.py start" % rd,
+                       timeout_s=25)
+            up = False
+            for _ in range(15):
+                rc_p, _ = self._exec(device, ping)
+                if rc_p == 0:
+                    up = True
+                    break
+                time.sleep(0.3)
+            if not up:
+                raise TransportError("RAO_DEVICE_UNREACHABLE",
+                                     "daemon failed to start")
         return r
 
     def _dev_rda_dir(self, device):
         return device.get("rdaDir") or self.rda_dir
 
-    def ensure_daemon(self, device):
-        """Ping the daemon; start it if not alive. Returns True if alive."""
+    def steer(self, device, goal_id, payload):
+        """v0.9 control-plane steer: one-shot inject via a fresh on-device
+        connection (bypasses the goal's event bridge entirely)."""
+        import base64 as _b64
+        import json as _json
         rd = self._dev_rda_dir(device)
-        ping = "cd %s && python3 rda_daemon.py ping" % rd
-        rc, _ = self._exec(device, ping)
-        if rc == 0:
+        b64 = _b64.b64encode(
+            _json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode()
+        cmd = ("cd %s && python3 rda_daemon.py inject-one "
+               "--goal-id %s --payload-b64 %s" % (rd, goal_id, b64))
+        rc, out = self._exec(device, cmd, timeout_s=15)
+        for line in out.strip().splitlines():
+            try:
+                m = json.loads(line)
+            except ValueError:
+                continue
+            if m.get("type") == "injected":
+                log.info("steer receipt: queued=%s reason=%s",
+                         m.get("queued"), m.get("reason"))
+                return m.get("queued") == "delivered"
+        return False
+
+    def ensure_daemon(self, device):
+        """Provision runtime files + guarantee the daemon is alive.
+        Returns True if alive."""
+        try:
+            self.provision(device)
             return True
-        rc, out = self._exec(device, "cd %s && python3 rda_daemon.py start"
-                             % rd, timeout_s=20)
-        rc, _ = self._exec(device, ping)
-        return rc == 0
+        except TransportError:
+            return False
 
     def open_session(self, goal_id, device, goal_obj):
         chan = SshDaemonChannel(goal_id, device, self._password_of(device),
