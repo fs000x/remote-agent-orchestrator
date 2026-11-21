@@ -142,6 +142,46 @@ def _rda_dir(reg):
                                     "/home/diablo/git500/zcode_prj/rao")
 
 
+# ------------------------------------------------------------------ run
+def cmd_run(args):
+    """One-shot remote execution without MCP (works from any Agent's Bash)."""
+    from rao.orchestrator import Orchestrator
+    from rao.transport import SshTransport
+    reg = DeviceRegistry()
+    dev = reg.require(args.device)
+    orch = Orchestrator(registry=reg,
+                        transport=SshTransport(
+                            rda_dir=dev.get("rdaDir") or _rda_dir(reg)),
+                        runs_dir=_runs_dir())
+    goal = {"objective": "rao run: %s" % args.command,
+            "workspace": dev.get("workspace"),
+            "constraints": {"timeoutMs": args.timeout_ms,
+                            "stepTimeoutMs": args.timeout_ms},
+            "plan": {"steps": [
+                {"id": "s1", "type": "shell", "command": args.command,
+                 "success": {"exitCode": 0}}]}}
+    ds = orch.dispatch([dev["id"]], goal)
+    run = orch.get_run(ds[0]["goalId"])
+    if not run.wait_terminal(args.timeout_ms / 1000.0 + 30):
+        print("[rao] goal did not finish in time; state=%s" % run.state)
+        return 1
+    res = run.result or {}
+    print("[rao] status: %s" % res.get("status"))
+    if res.get("summary"):
+        print("[rao] summary: %s" % res["summary"])
+    for ev in (run.chan.events if run.chan else []):
+        if ev["kind"] == "step_result" and ev["data"].get("stdoutTail"):
+            print("[out] %s" % ev["data"]["stdoutTail"].strip())
+    return 0 if res.get("status") == "success" else 1
+
+
+def _runs_dir():
+    reg = DeviceRegistry()
+    return (reg.settings or {}).get("runsDir") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), "runs")
+
+
 # ------------------------------------------------------------------ mcp
 def cmd_mcp(args):
     from rao.server import mcp as server
@@ -169,6 +209,10 @@ def main(argv=None):
     sub.add_parser("doctor", help="诊断：Agent/设备/远端能力")
     p_un = sub.add_parser("uninstall", help="回滚注入")
     p_un.add_argument("--agents", help="逗号分隔（默认全部）")
+    p_run = sub.add_parser("run", help="一条命令在远程设备上执行并等待结果")
+    p_run.add_argument("--device", required=True)
+    p_run.add_argument("--timeout-ms", type=int, default=300000)
+    p_run.add_argument("command", help="要在远端执行的 shell 命令")
     sub.add_parser("mcp", help="启动 MCP server（stdio）")
 
     args = ap.parse_args(argv)
@@ -180,6 +224,8 @@ def main(argv=None):
         return cmd_doctor(args)
     if args.cmd == "uninstall":
         return cmd_uninstall(args)
+    if args.cmd == "run":
+        return cmd_run(args)
     if args.cmd == "mcp":
         return cmd_mcp(args)
     ap.print_help()

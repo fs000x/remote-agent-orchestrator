@@ -130,3 +130,32 @@
 - plugin/ 目录：ZCode marketplace 分发形态（mcpServers→`rao mcp`，含 Skill）
 - Codex 检测留位（agents.detect_codex，注入未实现，明确标注）
 - 文档：PRODUCT.md（产品方案）、README 重写（CLI 优先）、HANDOVER 终稿
+
+## 2026-11-22：真实使用问题修复（v0.9.0）
+
+用户在新 ZCode 会话实测（sess_e05cbf8c"查询远程设备列表"）暴露 4 个真 bug + 2 个
+易用性问题，全部修复并以真实场景测试锁定：
+
+### 修复清单
+1. **[P1] SSH 桥读泵超时死亡**：`socket.create_connection(timeout=5)` 的超时传导给
+   makefile → 桥读泵在 5 秒事件静默后 TimeoutError 死亡（v0.8 前静默死、事件流冻结、
+   alive() 恒 True 永不重连）。修复：分离读写文件对象（共享 makefile("rwb") 非线程
+   安全）+ `sock.settimeout(None)` + 泵死亡即杀桥进程（EOF → orchestrator attach 恢复）。
+   本地桥 5 轮 steer 全部送达。
+2. **[P2] steer 送达回执**：daemon inject 回执带 queued 状态（delivered/pending/
+   dropped）+ engine 未就绪的 pending 队列；_DaemonLink.write_line 同步等回执。
+3. **[P2] durationMs 虚高**：finish 公式硬编码 600000 预算 → 改用引擎真实起始时间。
+4. **[P2] collect/status 跨进程回载**：持久化 runs/<goalId>.json 回载兜底。
+5. **[P2] dispatch 探针/clone 不一致**：protocol 回填到 prepared 基底再 deepcopy。
+6. **[ops] daemon 旧内存代码**：provision 上传后远端 daemon 仍跑旧代码（哈希比对
+   上传后恒等，永远检测不到）→ daemon 自报 codeHash（daemon.json）→ 不一致即重启。
+7. **[P1] 控制面/数据面分离**：steer/cancel 改走独立短连接（`rda_daemon.py
+   inject-one`，fresh on-device connection + 回执确认），不再与事件桥共享通道。
+8. **[产品] `rao run` CLI**：一条命令远端执行（无 MCP 依赖，手机端会话经 Bash 可用）。
+9. **[产品决策] 移除 ZCode 设备/凭据导入**：设备仅由用户配置（用户明确要求）。
+
+### 验证
+- test_real_usage.py：RU1（用户原始 HTTP 场景全链路）/ RU2（门闩 steer ×3 轮）/ 
+  RU3（durationMs）/ RU4（跨进程 collect）/ RU5（无 protocol dispatch）/ RU6（rao run）
+- 全量 84 测试绿；真机 daemon 时间线核实（sleep 20 真实执行 20s，steer 竞态由
+  门闩模式消除）

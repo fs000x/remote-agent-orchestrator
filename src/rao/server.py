@@ -89,8 +89,19 @@ def remote_status(goal_id: str = None, device_id: str = None) -> str:
     if goal_id:
         run = orch.get_run(goal_id)
         if run is None:
-            return json.dumps({"error": "no such goalId: %s" % goal_id},
-                              ensure_ascii=False)
+            # goal from an earlier process: fall back to persisted record
+            rec = orch.run_store.load_goal_record(goal_id)
+            if rec is None:
+                return json.dumps({"error": "no such goalId: %s" % goal_id},
+                                  ensure_ascii=False)
+            return json.dumps({
+                "goalId": goal_id,
+                "deviceId": (rec.get("goal") or {}).get("deviceId"),
+                "state": rec.get("state"),
+                "result": rec.get("result"),
+                "events": rec.get("events", [])[-50:],
+                "persisted": True,
+            }, ensure_ascii=False, indent=1)
         return json.dumps(run.snapshot(), ensure_ascii=False, indent=1)
     if device_id:
         runs = orch.runs_for_device(device_id)
