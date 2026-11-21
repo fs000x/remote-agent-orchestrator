@@ -19,12 +19,22 @@ from rao import protocol  # noqa: E402
 def fake_home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
-    monkeypatch.setenv("RAO_ZCODE_CONFIG", str(home / ".zcode/cli/config.json"))
-    monkeypatch.setenv("RAO_ZCODE_SKILLS", str(home / ".zcode/skills"))
-    monkeypatch.setenv("RAO_CLAUDE_CONFIG", str(home / ".claude.json"))
-    monkeypatch.setenv("RAO_CLAUDE_SKILLS", str(home / ".claude/skills"))
-    monkeypatch.setenv("RAO_STATE_DIR", str(home / ".rao-state"))
+    monkeypatch.setattr(agents, "get_agent_def", _fake_get_agent_def(home))
+    monkeypatch.setattr(agents, "state_dir",
+                        lambda *a: str(home / ".rao-state"))
     return home
+
+
+def _fake_get_agent_def(home):
+    original = agents.get_agent_def   # capture BEFORE monkeypatch replaces it
+    def _get(name, config_path=None, skills_dir=None):
+        return original(
+            name,
+            config_path or str(home / (".zcode/cli/config.json"
+                                       if name == "zcode" else ".claude.json")),
+            skills_dir or str(home / (".zcode/skills" if name == "zcode"
+                                      else ".claude/skills")))
+    return _get
 
 
 def test_detect_agents_with_fake_configs(fake_home):
@@ -34,7 +44,7 @@ def test_detect_agents_with_fake_configs(fake_home):
     # 本机若装有 ZCode 桌面版，installed 会是 True（探测的是全局安装）——
     # 跨机器稳定断言只针对：注入状态、以及 fake_home 里只有 zcode 时 claude 未装
     assert found["zcode"]["injected"] is False
-    assert found["claude"]["config_path"] ==         os.environ["RAO_CLAUDE_CONFIG"]   # 环境覆盖生效（installed 与真机相关，不断言）
+    assert found["claude"]["config_path"] ==         str(fake_home / ".claude.json")   # 参数化路径生效
 
 
 def test_inject_zcode_idempotent_and_skill(fake_home):

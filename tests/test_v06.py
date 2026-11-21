@@ -75,3 +75,65 @@ def test_goal_agent_validation():
         agent="claude", plan={"steps": [{"id": "s", "type": "shell",
                                          "command": "x"}]}))
     assert not ok and "drop plan" in err
+
+
+PLANNER_OK = r'''import json, sys
+print(json.dumps({"steps": [{"id": "p1", "type": "shell",
+                             "command": "echo planned-ok",
+                             "success": {"exitCode": 0,
+                                         "stdoutContains": "planned-ok"}}]}))
+'''
+
+PLANNER_FAIL = r'''import sys
+sys.stderr.write("no model available")
+sys.exit(1)
+'''
+
+
+def _write_planner(tmp_path, body, ok=True):
+    p = tmp_path / "planner.py"
+    p.write_text(body, encoding="utf-8")
+    cmd = '"%s" "%s" {objective} {recon_file}' % (sys.executable, p)
+    if not ok:
+        cmd = '"%s" "%s"' % (sys.executable, p)  # planner script exits 1
+    (tmp_path / "planner.json").write_text(json.dumps({"command": cmd}),
+                                           encoding="utf-8")
+
+
+def test_remote_llm_planner_produces_plan(tmp_path):
+    _write_planner(tmp_path, PLANNER_OK, ok=True)
+    g = _goal(planner="remote-llm")   # no plan → planner should be used
+    r = RdaProc(g, extra_args=["--state-dir", str(tmp_path)])
+    res = r.wait_result(30)
+    assert res and res["data"]["status"] == "success"
+    assert [s["id"] for s in res["data"]["steps"]] == ["p1"]
+    tails = [json.dumps(e["data"]) for e in r.events
+             if e["kind"] == "step_result"]
+    assert any("planned-ok" in t for t in tails)
+    assert any("remote planner" in a for a in res["data"]["assumptions"])
+    assert "ask" not in r.kinds()
+    r.close()
+
+
+def test_remote_llm_planner_failure_falls_back_to_ask(tmp_path):
+    _write_planner(tmp_path, PLANNER_FAIL, ok=False)
+    g = _goal(planner="remote-llm")
+    r = RdaProc(g, extra_args=["--state-dir", str(tmp_path)])
+    import time
+    deadline = time.monotonic() + 15
+    asks = []
+    while time.monotonic() < deadline:
+        asks = [e for e in r.events if e.get("kind") == "ask"]
+        if asks:
+            break
+        time.sleep(0.05)
+    assert asks, "expected fallback ask"
+    plan = {"steps": [{"id": "p1", "type": "shell", "command": "echo fallback",
+                       "success": {"exitCode": 0}}]}
+    r.inject({"type": "steer", "askId": asks[0]["askId"],
+              "answer": {"plan": plan}})
+    res = r.wait_result(20)
+    assert res and res["data"]["status"] == "success"
+    assert any("planner.json missing" in a or "planner" in a
+               for a in res["data"]["assumptions"])
+    r.close()

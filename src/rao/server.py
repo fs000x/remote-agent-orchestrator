@@ -1,7 +1,8 @@
 """rao-mcp: ZCode MCP server exposing the 6 orchestration tools.
 
 Launch: python server.py  (stdio transport; ZCode spawns it per MCP config)
-Env:    RAO_CONFIG (devices.json path), RAO_RUNS_DIR, RAO_RDA_DIR
+Settings come from devices.json top-level "settings" object:
+  {"settings": {"transportMode": "auto", "rdaDir": "/path/on/remote", "runsDir": "runs"}}
 """
 import json
 import logging
@@ -27,11 +28,12 @@ registry = DeviceRegistry()
 
 
 def _build_transport():
-    """RAO_TRANSPORT_MODE: spawn | daemon | auto (default).
-    auto probes the persistent daemon once; falls back to spawn mode."""
-    rda_dir = os.environ.get("RAO_RDA_DIR",
-                             "/home/diablo/git500/zcode_prj/rao")
-    mode = os.environ.get("RAO_TRANSPORT_MODE", "auto")
+    """transportMode: spawn | daemon | auto (default, from devices.json
+    settings). auto probes the persistent daemon once; falls back to spawn."""
+    settings = registry.settings or {}
+    rda_dir = settings.get("rdaDir",
+                           "/home/diablo/git500/zcode_prj/rao")
+    mode = settings.get("transportMode", "auto")
     if mode == "spawn":
         return SshTransport(rda_dir=rda_dir)
     daemon_t = SshDaemonTransport(rda_dir=rda_dir)
@@ -48,7 +50,8 @@ def _build_transport():
     return SshTransport(rda_dir=rda_dir)
 
 
-orch = Orchestrator(registry, transport=_build_transport())
+orch = Orchestrator(registry, transport=_build_transport(),
+                    runs_dir=(registry.settings or {}).get("runsDir"))
 
 
 @mcp.tool()

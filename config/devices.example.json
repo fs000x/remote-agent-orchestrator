@@ -1,15 +1,20 @@
 {
+  "settings": {
+    "transportMode": "auto",
+    "runsDir": "runs"
+  },
   "devices": [
     {
-      "id": "diablo-100",
-      "host": "192.168.0.100",
+      "id": "my-linux-box",
+      "host": "example.com",
       "port": 22,
-      "user": "diablo",
-      "workspace": "/home/diablo/git500/zcode_prj",
+      "user": "your-user",
+      "workspace": "/home/your-user/your-project",
+      "rdaDir": "/home/your-user/.rao/runtime",
       "maxConcurrentGoals": 2,
       "auth": {
         "type": "password",
-        "password": "REPLACE_ME (or set env RAO_DEVICE_DIABLO_100_PASSWORD)"
+        "password": "YOUR_PASSWORD (recommended: store in OS keyring via `rao devices add`, then remove this field)"
       }
     }
   ]

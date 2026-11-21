@@ -44,8 +44,15 @@ import protocol  # noqa: E402
 from rda import GoalEngine  # noqa: E402
 
 DAEMON_VERSION = "0.3.0"
-RAO_DIR = os.environ.get("RAO_HOME") or os.path.join(
-    os.path.expanduser("~"), ".rao")
+RAO_DIR = os.path.join(os.path.expanduser("~"), ".rao")
+
+
+def _set_home(home):
+    global RAO_DIR, DAEMON_JSON, DAEMON_LOG, GOALS_DIR
+    RAO_DIR = home
+    DAEMON_JSON = os.path.join(RAO_DIR, "daemon.json")
+    DAEMON_LOG = os.path.join(RAO_DIR, "daemon.log")
+    GOALS_DIR = os.path.join(RAO_DIR, "goals")
 DAEMON_JSON = os.path.join(RAO_DIR, "daemon.json")
 DAEMON_LOG = os.path.join(RAO_DIR, "daemon.log")
 GOALS_DIR = os.path.join(RAO_DIR, "goals")
@@ -517,6 +524,7 @@ def cmd_bridge():
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--home", help="state dir (default ~/.rao)")
     sub = ap.add_subparsers(dest="cmd")
     p_serve = sub.add_parser("serve")
     p_serve.add_argument("--port", type=int, default=0)
@@ -526,6 +534,8 @@ def main():
     sub.add_parser("stop")
     sub.add_parser("client-bridge")
     args = ap.parse_args()
+    if args.home:
+        _set_home(args.home)
     if args.cmd == "serve":
         return cmd_serve(args.port)
     if args.cmd == "start":

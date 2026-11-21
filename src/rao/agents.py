@@ -17,19 +17,14 @@ MCP_SERVER_NAME = "remote-agent-orchestrator"
 ENTRY_NOTE = "installed by rao"
 
 
-def state_dir():
-    return os.environ.get("RAO_STATE_DIR") or os.path.join(
-        os.path.expanduser("~"), ".rao")
+def state_dir(state_dir_override=None):
+    return state_dir_override or os.path.join(os.path.expanduser("~"), ".rao")
 
 
 def skill_source_path():
     import rao
     return os.path.join(os.path.dirname(rao.__file__), "data", "skills",
                         "cross-device-orchestrator", "SKILL.md")
-
-
-def _env_or(env_key, default):
-    return os.environ.get(env_key) or default
 
 
 class AgentDef:
@@ -53,29 +48,27 @@ class AgentDef:
         node.pop(self.mcp_key_path[-1], None)
 
 
-def get_agent_def(name):
+def get_agent_def(name, config_path=None, skills_dir=None):
+    """Host paths default to per-user standard locations; tests may pass
+    explicit overrides as parameters (no env-var configuration)."""
     home = os.path.expanduser("~")
     if name == "zcode":
         return AgentDef(
             "zcode", "zcode",
-            _env_or("RAO_ZCODE_CONFIG",
-                    os.path.join(home, ".zcode", "cli", "config.json")),
-            _env_or("RAO_ZCODE_SKILLS",
-                    os.path.join(home, ".zcode", "skills")),
+            config_path or os.path.join(home, ".zcode", "cli", "config.json"),
+            skills_dir or os.path.join(home, ".zcode", "skills"),
             ["mcp", "servers"])
     if name == "codex":
         return AgentDef(
             "codex", "codex",
-            _env_or("RAO_CODEX_CONFIG", os.path.join(home, ".codex",
-                                                     "config.toml")),
-            _env_or("RAO_CODEX_PROMPTS", os.path.join(home, ".codex",
-                                                      "prompts")),
+            config_path or os.path.join(home, ".codex", "config.toml"),
+            skills_dir or os.path.join(home, ".codex", "prompts"),
             ["mcp_servers"])
     if name == "claude":
         return AgentDef(
             "claude", "claude",
-            _env_or("RAO_CLAUDE_CONFIG", os.path.join(home, ".claude.json")),
-            _env_or("RAO_CLAUDE_SKILLS", os.path.join(home, ".claude", "skills")),
+            config_path or os.path.join(home, ".claude.json"),
+            skills_dir or os.path.join(home, ".claude", "skills"),
             ["mcpServers"])
     raise KeyError("unsupported agent: %s" % name)
 

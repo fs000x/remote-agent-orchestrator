@@ -38,8 +38,8 @@ class GoalRun:
         self._attempt_count = 0
         self._finalized = False
         self.cancel_requested = False
-        self.resume_max = int(os.environ.get("RAO_RESUME_MAX",
-                                             RESUME_MAX_DEFAULT))
+        self.resume_max = int(getattr(orch, "resume_max",
+                                      RESUME_MAX_DEFAULT))
         self._wake = threading.Condition()
         self._thread = threading.Thread(target=self._run, daemon=True,
                                         name="rao-goal-%s" % self.goal_id[:8])
@@ -563,16 +563,14 @@ class DagRun:
 
 class Orchestrator:
     def __init__(self, registry, transport=None, runs_dir=None,
-                 max_concurrent_goals=5):
+                 max_concurrent_goals=5, resume_max=RESUME_MAX_DEFAULT,
+                 rda_dir="/home/diablo/git500/zcode_prj/rao"):
         self.registry = registry
-        self.transport = transport or SshTransport(
-            rda_dir=os.environ.get("RAO_RDA_DIR",
-                                   "/home/diablo/git500/zcode_prj/rao"))
+        self.transport = transport or SshTransport(rda_dir=rda_dir)
         self.max_concurrent_goals = max_concurrent_goals
-        self.run_store = RunStore(runs_dir or os.environ.get(
-            "RAO_RUNS_DIR",
-            os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__)))), "runs")))
+        self.run_store = RunStore(runs_dir or os.path.join(
+            os.path.dirname(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__)))), "runs"))
         self._lock = threading.RLock()
         self._global_slots = threading.Semaphore(max_concurrent_goals)
         self._device_slots = {}   # device_id -> Semaphore
