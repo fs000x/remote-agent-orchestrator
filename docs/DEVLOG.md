@@ -96,3 +96,37 @@
   先看 serve-stderr.log 与 RAO_WIRE_DEBUG=1 的 wire 日志。
 - MCP 工具面仍是 6 个（DAG/报告/daemon 由现有工具组合覆盖）；如需独立暴露
   dispatch_dag 给主 agent，在 server.py 加薄封装即可。
+
+## 2026-11-21：产品化三个阶段（v0.5 / v0.6 / v0.7）
+
+按用户产品化要求（跨 Agent 独立工具），完整讨论后锁定决策（PRODUCT.md §2），
+分三阶段实现。**重要澄清**：编排始终是两层——ZCode/Claude 主 agent 是语义层
+"大脑"，Python Orchestrator 是机制层"运行时"（看门狗/并发/预算必须确定性代码）。
+
+### v0.5.0（feature/v0.5-cli-setup）：rao CLI + 注入 + 自动补部署
+- rda 运行时 + Skill 收编进包（src/rao/runtime、src/rao/data）→ 可分发
+- rao CLI：setup / devices add|list|remove / doctor / uninstall / mcp
+- agents.py：检测（PATH+配置目录+桌面安装位置）、备份→合并→幂等写、
+  manifest 回滚（uninstall 精确还原）
+- provision.py：远端 RDA 哈希比对 + 自动补部署，挂入 GoalRun 在 open_session 之前
+  **踩坑**：初次挂到了 open_session 之后 → 远端 cd 失败（远端 shell 是 zsh，
+  报"没有那个文件或目录"）→ 调整顺序后 T19 稳定通过
+- 真机：rao doctor 检出"远端有 zcode-server、无 claude"；
+  rao setup 真实注入 zcode（幂等）+claude，回滚→重装全生命周期演练
+
+### v0.6.0（feature/v0.6-agent-backends）：设备复用 + 能力矩阵 + claude backend
+- zcode_store.py：只读导入 ZCode 桌面设备（setting.json）+ 凭据解密
+  （AES-256-GCM；Windows 凭据管理器 CredReadW ctypes；候选解码 + GCM 自校验）
+  **踩坑**：GCM tag 在密文尾部 16 字节，测试 seal 初版切分反了
+- 设备表合并（本地优先，RAO_MERGE_ZCODE_DEVICES=0 关）；凭据链四级
+- goal.agent 字段 + RDA claude backend（整目标托管：claude -p stream-json →
+  事件映射；maxSteps→max-turns；timeoutMs→击杀看门狗；远端无 claude 快速失败）
+- devices_list 能力矩阵（is_agent:false 诚实字段）+ Skill 硬规则
+  **踩坑**：测试 shim 的 .cmd 路径反斜杠被转义链搞成 formfeed → 改 %~dp0 方案
+- 真机 T20（能力字段）/T21（无 claude 快速失败，报错清晰）
+
+### v0.7.0（feature/v0.7-release）：发布就绪
+- pyproject 构建 sdist/wheel，twine check PASSED
+- plugin/ 目录：ZCode marketplace 分发形态（mcpServers→`rao mcp`，含 Skill）
+- Codex 检测留位（agents.detect_codex，注入未实现，明确标注）
+- 文档：PRODUCT.md（产品方案）、README 重写（CLI 优先）、HANDOVER 终稿

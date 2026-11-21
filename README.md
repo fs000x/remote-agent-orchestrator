@@ -1,10 +1,30 @@
-# Remote Agent Orchestrator (RAO)
+# rao — Remote Agent Orchestrator
 
-ZCode 本地主 agent ←→ 远程设备 RDA agent 的调度系统（MCP plugin，非源码扩展）。
+跨 Agent 远程编排工具：安装后，ZCode / Claude Code 的主 Agent 即可把目标
+**并行派发**到远程设备上的执行者（内置执行器或远端 Claude），可控、可恢复、
+可审计。产品定位与边界见 [docs/PRODUCT.md](docs/PRODUCT.md)。
 
-- 设计文档: [docs/DESIGN.md](docs/DESIGN.md)
-- 开发文档: [docs/DEVLOG.md](docs/DEVLOG.md)
-- 交接文档: [docs/HANDOVER.md](docs/HANDOVER.md)
+## 快速开始
+
+```bash
+pipx install rao        # 或: pip install -e .（本仓库开发态）
+rao setup               # 检测本机 Agent → 注入 MCP+Skill（备份/合并/可回滚）
+rao devices add         # 配置远程设备（独立于任何 Agent 的设备配置）
+rao doctor              # 诊断：Agent / 设备 / 远端能力（RDA、claude、ZCode Server）
+```
+
+之后在 ZCode / Claude Code 会话中直接用自然语言派发任务即可，
+6 个编排工具（devices_list / remote_dispatch / remote_status / remote_steer /
+remote_cancel / remote_collect）自动可用。
+
+## 执行模式（诚实命名）
+
+| 模式 | 是什么 | 适合 |
+|---|---|---|
+| **executor**（内置执行器） | 按宿主 Agent 下发的步骤程序执行命令行命令（**非自主 Agent**，`is_agent:false`） | 结构化目标：构建/收集/测试/部署 |
+| **agent**（远端 Claude 托管） | 远端真 Agent 整目标自主执行（需远端已装 Claude 并登录） | 开放性目标 |
+
+
 
 ## 组件
 
