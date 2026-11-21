@@ -417,3 +417,31 @@ def test_t17_remote_planner_slot(orch):
     assert "ask" not in kinds
     # cleanup: remove the planner config so other tests are unaffected
     _remote_exec("rm -f /home/diablo/.rao/planner.json")
+
+
+# --- T20/T21 (v0.6): capability matrix + claude backend plumbing ------------
+def test_t20_capability_matrix_fields():
+    d = [x for x in reg.describe_all(probe=False)
+         if x["id"] == DEVICE_ID][0]
+    ex = d["execution"]
+    assert ex["executor"] is True and ex["is_agent"] is False
+    assert ex["agent_claude"] == "unknown"   # 远端探测由 doctor/recon 完成
+
+
+def test_t21_claude_backend_fast_fail_without_claude(orch):
+    """远端无 claude CLI → agent backend 快速失败并给出清晰原因。
+    （远端装好 claude 并登录后，同一 goal 将整目标托管成功——见文档）"""
+    rc, out, _ = _remote_exec("which claude >/dev/null 2>&1 && echo yes || echo no")
+    if out.strip() == "yes":
+        rc2, _, _ = _remote_exec("mv $(which claude) $(which claude).bak")
+    try:
+        goal = _goal(agent="claude",
+                     objective="whatever the remote agent decides to do",
+                     constraints={"maxSteps": 3, "timeoutMs": 60000})
+        ds = orch.dispatch([DEVICE_ID], goal)
+        run = _wait(orch, ds[0]["goalId"], timeout_s=60)
+        assert run.result["status"] == "failed"
+        assert "claude CLI not found" in run.result["summary"]
+    finally:
+        if out.strip() == "yes":
+            _remote_exec("mv $(which claude).bak $(which claude)")

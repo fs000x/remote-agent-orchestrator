@@ -12,6 +12,7 @@ RDA's own logs go to stderr.
 import json
 import os
 import platform
+import shutil
 import socket
 import subprocess
 import sys
@@ -329,6 +330,131 @@ class GoalEngine(object):
         self.steps_report.append(rep)
         return rep
 
+    # --- claude agent backend (v0.6, whole-goal delegation) -----------------
+    def _run_claude_backend(self):
+        """goal.agent='claude': delegate the whole objective to the remote
+        claude CLI in headless mode. Budgets map best-effort:
+        maxSteps -> --max-turns, timeoutMs -> hard kill deadline,
+        forbidden -> appended system prompt (soft). No mid-run steering."""
+        claude_bin = shutil.which("claude")
+        if not claude_bin:
+            self.emit(protocol.KIND_ERROR,
+                      {"message": "claude CLI not found on device; "
+                                  "agent backend unavailable", "fatal": True})
+            return self.finish(protocol.ST_FAILED,
+                               "claude CLI not found on device")
+        c = self.constraints
+        max_turns = int(c.get("maxSteps", protocol.DEFAULTS["maxSteps"]))
+        timeout_s = int(c.get("timeoutMs",
+                              protocol.DEFAULTS["timeoutMs"])) / 1000.0
+        cmd = [claude_bin, "-p", self.goal.get("objective", ""),
+               "--output-format", "stream-json", "--verbose",
+               "--max-turns", str(max_turns)]
+        forbidden = c.get("forbidden", []) or []
+        if forbidden:
+            cmd += ["--append-system-prompt",
+                    "Forbidden operations (never perform): "
+                    + "; ".join(forbidden)]
+        cwd = self.goal.get("workspace") or None
+        self.emit(protocol.KIND_PROGRESS,
+                  {"backend": "claude", "phase": "running",
+                   "maxTurns": max_turns, "timeoutMs": int(timeout_s * 1000)})
+        try:
+            proc = subprocess.Popen(cmd, cwd=cwd, shell=False,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                    stdin=subprocess.DEVNULL)
+        except Exception as exc:
+            self.emit(protocol.KIND_ERROR,
+                      {"message": "claude spawn failed: %s" % exc,
+                       "fatal": True})
+            return self.finish(protocol.ST_FAILED, "claude spawn failed")
+
+        q_lines = queue.Queue()
+        tool_uses = []
+
+        def reader():
+            try:
+                while True:
+                    chunk = proc.stdout.read1(65536)
+                    if not chunk:
+                        break
+                    q_lines.put(chunk)
+                q_lines.put(None)
+            except Exception:
+                q_lines.put(None)
+
+        threading.Thread(target=reader, daemon=True).start()
+        watcher = threading.Timer(timeout_s, proc.kill)
+        watcher.daemon = True
+        watcher.start()
+
+        final = None
+        killed = False
+        buf = b""
+        done = False
+        while not done:
+            if not self.poll_injections() or self.cancelled:
+                killed = True
+                proc.kill()
+                break
+            try:
+                chunk = q_lines.get(timeout=0.5)
+            except queue.Empty:
+                chunk = b""
+            if chunk is None:
+                break
+            if chunk:
+                buf += chunk
+                while b"\n" in buf:
+                    ln, buf = buf.split(b"\n", 1)
+                    line = ln.decode("utf-8", "replace").strip()
+                    if not line:
+                        continue
+                    try:
+                        msg = json.loads(line)
+                    except ValueError:
+                        continue
+                    mtype = msg.get("type")
+                    if mtype == "assistant":
+                        for blk in (msg.get("message", {})
+                                    .get("content") or []):
+                            if blk.get("type") == "tool_use":
+                                tool_uses.append(blk.get("name"))
+                                self.emit(protocol.KIND_PROGRESS,
+                                          {"backend": "claude",
+                                           "tool": blk.get("name"),
+                                           "phase": "tool_use"})
+                    elif mtype == "result":
+                        final = msg
+                        done = True
+                        break
+            if final is not None and proc.poll() is not None:
+                done = True
+        watcher.cancel()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            proc.kill()
+
+        if killed or self.cancelled:
+            return self.finish(protocol.ST_CANCELLED,
+                               "claude backend cancelled")
+        if final is None:
+            return self.finish(protocol.ST_FAILED,
+                               "claude ended without result "
+                               "(timeout or crash)")
+        subtype = final.get("subtype", "")
+        if subtype != "success":
+            return self.finish(protocol.ST_FAILED,
+                               "claude result: %s" % subtype)
+        text = str(final.get("result", ""))[:800]
+        self.artifacts.append({"path": "<claude-result>", "kind": "summary",
+                               "stepId": "claude"})
+        return self.finish(protocol.ST_SUCCESS,
+                           text or ("claude completed with %d tool uses"
+                                    % len(tool_uses)))
+
     # --- recon -------------------------------------------------------------
     @staticmethod
     def _shq(s):
@@ -519,6 +645,9 @@ class GoalEngine(object):
                     return self.finish(protocol.ST_FAILED,
                                        "ensureWorkspace failed: %s"
                                        % rep.get("reason"))
+
+            if self.goal.get("agent", "builtin") == "claude":
+                return self._run_claude_backend()
 
             plan = self.goal.get("plan")
             if not plan or not (plan.get("steps") or []):

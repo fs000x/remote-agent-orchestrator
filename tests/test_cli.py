@@ -82,6 +82,7 @@ def test_inject_claude_uses_mcpServers_key(fake_home):
 
 # --- device add/remove via registry file -----------------------------------
 def test_devices_add_remove(tmp_path, monkeypatch):
+    monkeypatch.setenv("RAO_MERGE_ZCODE_DEVICES", "0")  # isolate from real ZCode
     cfg = tmp_path / "devices.json"
     monkeypatch.setattr(DeviceRegistry, "_find_config", lambda self: str(cfg))
     reg = DeviceRegistry(config_path=str(cfg))

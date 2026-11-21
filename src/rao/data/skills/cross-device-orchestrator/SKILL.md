@@ -63,3 +63,16 @@ description: 使用 remote-agent-orchestrator 的 6 个 MCP 工具把任务并�
 - 不派发会破坏系统的命令（rm -rf 类）——即使不在 forbidden 里。
 - 设备离线时 `remote_dispatch` 会在连接阶段失败并记录；换设备或等恢复，不要盲目重试。
 - collect 报告只是材料；跨设备结论必须由你（主 agent）撰写并核对 assumptions。
+
+## 硬规则：executor 模式不是 Agent
+
+设备能力矩阵中 `execution.is_agent: false` 的设备（所有设备均有内置执行器）：
+
+- 内置执行器**只是按你下发的步骤程序执行命令行命令**——它不是自主 Agent，
+  不会自己调查、不会自己决策、不会处理开放性目标。
+- 向该设备派发前，你必须把目标拆解为**具体到命令级**的步骤程序
+  （调查、判断、决策全部由你完成），并告知用户：
+  "该设备将由内置执行器按计划步骤执行（非自主 Agent）"。
+- 禁止向用户暗示远端会"自己想办法"。
+- 远端检测到 claude CLI 时（`agent_claude: yes`），开放性任务可用
+  `goal.agent: "claude"` 整目标托管——此时远端是真正的自主 Agent。

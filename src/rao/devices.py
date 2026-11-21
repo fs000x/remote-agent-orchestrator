@@ -33,8 +33,25 @@ class DeviceRegistry:
                     data = json.load(fh)
                 for d in data.get("devices", []):
                     if isinstance(d, dict) and d.get("id"):
+                        d.setdefault("source", "local")
                         self.devices[d["id"]] = d
+            self._merge_zcode_devices()
         return dict(self.devices)
+
+    def _merge_zcode_devices(self):
+        """v0.6: import devices configured in ZCode desktop (read-only).
+        Local devices.json entries win on id collision.
+        Opt-out: RAO_MERGE_ZCODE_DEVICES=0."""
+        if os.environ.get("RAO_MERGE_ZCODE_DEVICES", "1") == "0":
+            return
+        try:
+            from .zcode_store import list_zcode_ssh_devices
+            for d in list_zcode_ssh_devices():
+                if d.get("id") and d["id"] not in self.devices:
+                    d.setdefault("maxConcurrentGoals", 2)
+                    self.devices[d["id"]] = d
+        except Exception:
+            pass  # ZCode not installed / malformed store: local-only mode
 
     def list_ids(self):
         with self._lock:
@@ -61,7 +78,14 @@ class DeviceRegistry:
                 "user": d.get("user"),
                 "workspace": d.get("workspace"),
                 "maxConcurrentGoals": d.get("maxConcurrentGoals", 2),
+                "source": d.get("source", "local"),
                 "online": None,
+                "execution": {
+                    # v0.6 capability matrix (honest naming, DESIGN §产品扩展)
+                    "executor": True,          # builtin 引擎：按步骤程序执行命令（非 Agent）
+                    "is_agent": False,         # executor 模式不是自主 Agent
+                    "agent_claude": "unknown", # 需远端探测（rao doctor / recon）
+                },
             }
             if probe:
                 entry["online"] = probe_tcp(d.get("host"), int(d.get("port", 22)))
