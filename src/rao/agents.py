@@ -63,6 +63,14 @@ def get_agent_def(name):
             _env_or("RAO_ZCODE_SKILLS",
                     os.path.join(home, ".zcode", "skills")),
             ["mcp", "servers"])
+    if name == "codex":
+        return AgentDef(
+            "codex", "codex",
+            _env_or("RAO_CODEX_CONFIG", os.path.join(home, ".codex",
+                                                     "config.toml")),
+            _env_or("RAO_CODEX_PROMPTS", os.path.join(home, ".codex",
+                                                      "prompts")),
+            ["mcp_servers"])
     if name == "claude":
         return AgentDef(
             "claude", "claude",
@@ -73,11 +81,22 @@ def get_agent_def(name):
 
 
 SUPPORTED_AGENTS = ("zcode", "claude")
+PLANNED_AGENTS = ("codex",)   # v0.7+：检测可见，注入未实现
+
+
+def detect_codex():
+    """v0.7: detection-only stub for Codex (injection lands in a later release)."""
+    home = os.path.expanduser("~")
+    cli_path = shutil.which("codex")
+    dir_exists = os.path.isdir(os.path.join(home, ".codex"))
+    return {"name": "codex", "installed": bool(cli_path or dir_exists),
+            "cli_path": cli_path, "injected": False,
+            "note": "injection not implemented yet (planned)"}
 
 
 def detect_agents():
     """Detect installed agent hosts. Returns list of dicts (never raises)."""
-    out = []
+    out = [detect_codex()]
     for name in SUPPORTED_AGENTS:
         d = get_agent_def(name)
         cli_path = shutil.which(d.cli) if d.cli else None

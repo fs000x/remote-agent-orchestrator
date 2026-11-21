@@ -1,0 +1,11 @@
+{
+  "name": "remote-agent-orchestrator",
+  "description": "Dispatch goals to semi-autonomous agents on remote devices (requires: pipx install rao, then `rao setup`)",
+  "mcpServers": {
+    "remote-agent-orchestrator": {
+      "command": "rao",
+      "args": ["mcp"]
+    }
+  },
+  "skills": "skills"
+}
