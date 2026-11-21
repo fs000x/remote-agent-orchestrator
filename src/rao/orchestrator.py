@@ -84,6 +84,9 @@ class GoalRun:
                     self._set_state(protocol.RUN_CANCELLED)
                     return
                 self._set_state(protocol.RUN_RUNNING)
+                if hasattr(orch.transport, "provision"):
+                    # v0.5: auto-provision remote runtime BEFORE first use
+                    orch.transport.provision(self.device)
                 try:
                     # pass the goal OBJECT; transport encodes it exactly once
                     self.chan = orch.transport.open_session(

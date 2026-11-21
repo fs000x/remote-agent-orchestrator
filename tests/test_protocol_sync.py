@@ -11,6 +11,6 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 def test_protocol_copies_identical():
     src = open(os.path.join(ROOT, "src", "rao", "protocol.py"),
                "rb").read()
-    rda = open(os.path.join(ROOT, "rda", "protocol.py"), "rb").read()
-    assert src == rda, ("rda/protocol.py drifted from src/rao/protocol.py — "
+    rda = open(os.path.join(ROOT, "src", "rao", "runtime", "protocol.py"), "rb").read()
+    assert src == rda, ("runtime/protocol.py drifted from src/rao/protocol.py — "
                         "run: python scripts/sync_protocol.py")

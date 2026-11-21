@@ -19,7 +19,7 @@ from rao.orchestrator import Orchestrator  # noqa: E402
 from rao.transport import (FakeTransport, TcpDaemonTransport,  # noqa: E402
                            FakeGoalChannel, _DaemonLink)
 
-RDA_DIR = os.path.join(ROOT, "rda")
+RDA_DIR = os.path.join(ROOT, "src", "rao", "runtime")
 PY = sys.executable
 
 
