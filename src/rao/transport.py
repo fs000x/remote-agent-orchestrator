@@ -290,12 +290,7 @@ def _drain_lines(buf, final=False):
 
 
 def password_of(device):
-    """Credential chain (v0.4): env var > OS keyring (optional) > config file."""
-    import os
-    env_key = "RAO_DEVICE_%s_PASSWORD" % device["id"].upper().replace("-", "_")
-    pw = os.environ.get(env_key)
-    if pw:
-        return pw
+    """Credential chain: OS keyring (optional) > config file. No env vars."""
     try:
         import keyring  # optional dependency
         pw = keyring.get_password("rao", device["id"])
@@ -346,14 +341,16 @@ class SshTransport:
 
     def provision(self, device):
         from .provision import ensure_rda
-        r = ensure_rda(self, device, self.rda_dir)
+        r = ensure_rda(self, device,
+                       device.get("rdaDir") or self.rda_dir)
         if r.get("error"):
             raise TransportError("RAO_DEVICE_UNREACHABLE",
                                  "provision failed: %s" % r["error"])
         return r
 
     def open_session(self, goal_id, device, goal_obj):
-        chan = SshGoalChannel(goal_id, device, password_of(device), self.rda_dir)
+        chan = SshGoalChannel(goal_id, device, password_of(device),
+                              device.get("rdaDir") or self.rda_dir)
         chan.connect_and_start(goal_obj)
         return chan
 
@@ -550,18 +547,6 @@ class _DaemonLink(object):
 
     # -- shared line framing (handshake and reader use the SAME buffer) ------
     def _recv_line(self, timeout_s=None):
-        import os as _os
-        _dbg = _os.environ.get("RAO_WIRE_DEBUG")
-        if _dbg:
-            print("[wire %s] recv_line t=%s buf=%r" % (
-                self.goal_id[:8], timeout_s, self._line_buf[:120]),
-                flush=True)
-        line = self.__recv_line_inner(timeout_s)
-        if _dbg:
-            print("[wire %s] -> %r" % (self.goal_id[:8], line), flush=True)
-        return line
-
-    def __recv_line_inner(self, timeout_s=None):
         """Return the next parsed line, or None on EOF. timeout_s=None blocks
         until EOF; otherwise raises nothing, returns None on quiet timeout."""
         deadline = None if timeout_s is None else time.monotonic() + timeout_s
@@ -874,25 +859,29 @@ class SshDaemonTransport:
                                  "provision failed: %s" % r["error"])
         return r
 
+    def _dev_rda_dir(self, device):
+        return device.get("rdaDir") or self.rda_dir
+
     def ensure_daemon(self, device):
         """Ping the daemon; start it if not alive. Returns True if alive."""
-        ping = "cd %s && python3 rda_daemon.py ping" % self.rda_dir
+        rd = self._dev_rda_dir(device)
+        ping = "cd %s && python3 rda_daemon.py ping" % rd
         rc, _ = self._exec(device, ping)
         if rc == 0:
             return True
         rc, out = self._exec(device, "cd %s && python3 rda_daemon.py start"
-                             % self.rda_dir, timeout_s=20)
+                             % rd, timeout_s=20)
         rc, _ = self._exec(device, ping)
         return rc == 0
 
     def open_session(self, goal_id, device, goal_obj):
         chan = SshDaemonChannel(goal_id, device, self._password_of(device),
-                                self.rda_dir)
+                                self._dev_rda_dir(device))
         chan.connect_and_start(goal_obj, resume=False)
         return chan
 
     def open_resume_session(self, goal_id, device):
         chan = SshDaemonChannel(goal_id, device, self._password_of(device),
-                                self.rda_dir)
+                                self._dev_rda_dir(device))
         chan.connect_and_start(None, resume=True)
         return chan

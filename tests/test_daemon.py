@@ -29,12 +29,11 @@ class LocalDaemon:
     def __init__(self, tmpdir, port=0):
         self.home = os.path.join(str(tmpdir), "rao-home")
         os.makedirs(self.home, exist_ok=True)
-        self.env = dict(os.environ, RAO_HOME=self.home)
         self._logf = open(os.path.join(self.home, "serve-stderr.log"), "wb")
         self.proc = subprocess.Popen(
-            [PY, os.path.join(RDA_DIR, "rda_daemon.py"), "serve",
-             "--port", str(port)],
-            env=self.env, stdout=self._logf, stderr=self._logf,
+            [PY, os.path.join(RDA_DIR, "rda_daemon.py"), "--home", self.home,
+             "serve", "--port", str(port)],
+            stdout=self._logf, stderr=self._logf,
             stdin=subprocess.DEVNULL)
         self._wait_ready(10)
 
@@ -301,13 +300,10 @@ def test_orchestrator_resume_budget_exhaustion(tmp_path):
 
     # channel that dies immediately, repeatedly
     t = AlwaysDying(events, die_after=0)
-    orch = Orchestrator(registry=reg, transport=t, runs_dir=str(tmp_path))
-    os.environ["RAO_RESUME_MAX"] = "1"
-    try:
-        ds = orch.dispatch(["d1"], {"protocol": "rao/1", "objective": "x"})
-        run = orch.get_run(ds[0]["goalId"])
-        assert run.wait_terminal(30)
-        assert run.state == protocol.RUN_FAILED
-        assert "resume budget" in (run.error or "")
-    finally:
-        os.environ.pop("RAO_RESUME_MAX", None)
+    orch = Orchestrator(registry=reg, transport=t, runs_dir=str(tmp_path),
+                        resume_max=1)
+    ds = orch.dispatch(["d1"], {"protocol": "rao/1", "objective": "x"})
+    run = orch.get_run(ds[0]["goalId"])
+    assert run.wait_terminal(30)
+    assert run.state == protocol.RUN_FAILED
+    assert "resume budget" in (run.error or "")

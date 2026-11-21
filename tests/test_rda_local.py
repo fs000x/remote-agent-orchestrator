@@ -31,10 +31,23 @@ def _goal(**over):
 
 
 class RdaProc:
-    def __init__(self, goal):
+    """path_dir: 受控前置 PATH 目录（供 fake 工具被 which 命中）。
+    构造最小 PATH（shim + python 目录 + 系统目录），避免整条用户 PATH。"""
+
+    def __init__(self, goal, extra_args=(), path_dir=None):
+        env = dict(os.environ)
+        if path_dir:
+            parts = [path_dir, os.path.dirname(sys.executable)]
+            if os.name == "nt":
+                parts += [os.environ.get("SystemRoot", r"C:\Windows") + "\System32",
+                          os.environ.get("SystemRoot", r"C:\Windows")]
+            else:
+                parts += ["/usr/bin", "/bin"]
+            env["PATH"] = os.pathsep.join(parts)
+        argv = [PY, RDA, "run-goal"] + list(extra_args)
         self.proc = subprocess.Popen(
-            [PY, RDA, "run-goal"], stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            argv, stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
         self.events = []
         self._reader = threading.Thread(target=self._read, daemon=True)
         self._reader.start()

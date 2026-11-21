@@ -121,9 +121,10 @@ def cmd_doctor(args):
             continue
         try:
             from rao.transport import SshTransport
-            t = SshTransport(rda_dir=_rda_dir())
+            t = SshTransport(rda_dir=_rda_dir(reg))
+            # device-level rdaDir override applies inside transport calls
             from rao.provision import remote_hashes
-            rh = remote_hashes(t, reg.require(d["id"]), _rda_dir())
+            rh = remote_hashes(t, reg.require(d["id"]), _rda_dir(reg))
             ok = all(v for v in rh.values())
             print("    RDA 运行时: %s" % ("就绪" if ok else "缺失/过期（派发时自动补部署）"))
             rc, out = t._exec(reg.require(d["id"]),
@@ -136,9 +137,9 @@ def cmd_doctor(args):
     return 0
 
 
-def _rda_dir():
-    return os.environ.get("RAO_RDA_DIR",
-                          "/home/diablo/git500/zcode_prj/rao")
+def _rda_dir(reg):
+    return (reg.settings or {}).get("rdaDir",
+                                    "/home/diablo/git500/zcode_prj/rao")
 
 
 # ------------------------------------------------------------------ mcp

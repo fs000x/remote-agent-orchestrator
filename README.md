@@ -70,10 +70,8 @@ cp config/devices.example.json config/devices.json   # 填入 host/user/password
 
 | 变量 | 作用 |
 |---|---|
-| `RAO_CONFIG` | devices.json 路径覆盖 |
-| `RAO_DEVICE_<ID>_PASSWORD` | 设备密码覆盖（优先于配置文件） |
-| `RAO_RDA_DIR` | 远端 RDA 目录（默认 /home/diablo/git500/zcode_prj/rao） |
-| `RAO_RUNS_DIR` | 运行记录目录（默认 <项目>/runs） |
+（v0.8 起无环境变量配置——所有设置集中在 devices.json：
+ 顶层 `settings`（transportMode/rdaDir/runsDir）+ 每设备的 `rdaDir`）
 
 ## 安全须知
 

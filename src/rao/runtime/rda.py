@@ -66,7 +66,7 @@ class GoalEngine(object):
     """sink: callable(event_dict) — defaults to stdout JSON lines.
     read_stdin: start the stdin InjectionReader (stdio mode only)."""
 
-    def __init__(self, goal, sink=None, read_stdin=True):
+    def __init__(self, goal, sink=None, read_stdin=True, state_dir=None):
         self.goal = goal
         self.goal_id = goal["goalId"]
         self.constraints = goal.get("constraints", {})
@@ -76,6 +76,8 @@ class GoalEngine(object):
         self.max_steps = int(self.constraints.get("maxSteps",
                                                   protocol.DEFAULTS["maxSteps"]))
         self.sink = sink or stdout_sink
+        self.state_dir = state_dir or os.path.join(
+            os.path.expanduser("~"), ".rao")
         self.injections = InjectionReader(sys.stdin if read_stdin else None)
         self.cancelled = False
         self.timed_out = False
@@ -512,26 +514,21 @@ class GoalEngine(object):
         return last
 
     def _try_remote_planner(self, facts):
-        """v0.4 planner slot: goal.planner='remote-llm' — run the configured
-        planner command (RDA_PLANNER_CMD env, else ~/.rao/planner.json
-        {"command": ...}; template with {objective} and {recon_file}); it must
-        print a plan JSON on stdout. Any failure falls back to the recon+ask
-        flow (recorded as an assumption)."""
-        cmd_tmpl = os.environ.get("RDA_PLANNER_CMD")
-        if not cmd_tmpl:
-            try:
-                pjson = os.path.join(
-                    os.environ.get("RAO_HOME") or
-                    os.path.join(os.path.expanduser("~"), ".rao"),
-                    "planner.json")
-                with open(pjson, encoding="utf-8") as fh:
-                    cmd_tmpl = json.load(fh).get("command")
-            except Exception:
-                cmd_tmpl = None
+        """v0.4 planner slot: goal.planner='remote-llm' — run the planner
+        command configured in <state-dir>/planner.json {"command": ...}
+        (template with {objective} and {recon_file}); it must print a plan
+        JSON on stdout. Any failure falls back to the recon+ask flow
+        (recorded as an assumption)."""
+        try:
+            pjson = os.path.join(self.state_dir, "planner.json")
+            with open(pjson, encoding="utf-8") as fh:
+                cmd_tmpl = json.load(fh).get("command")
+        except Exception:
+            cmd_tmpl = None
         if not cmd_tmpl:
             self.assumptions.append(
                 "planner=remote-llm but no planner command configured "
-                "(env RDA_PLANNER_CMD / ~/.rao/planner.json); "
+                "(planner.json missing in state dir); "
                 "fell back to ask flow")
             return None
         import tempfile
@@ -746,8 +743,14 @@ class GoalEngine(object):
 
 
 def main():
-    if len(sys.argv) < 2 or sys.argv[1] != "run-goal":
-        sys.stderr.write("usage: rda.py run-goal\n")
+    argv = sys.argv[1:]
+    state_dir = None
+    if "--state-dir" in argv:
+        i = argv.index("--state-dir")
+        state_dir = argv[i + 1] if len(argv) > i + 1 else None
+        argv = argv[:i] + argv[i + 2:]
+    if len(argv) < 1 or argv[0] != "run-goal":
+        sys.stderr.write("usage: rda.py run-goal [--state-dir DIR]\n")
         return 2
     line = sys.stdin.readline()
     line = line.strip()
@@ -768,7 +771,7 @@ def main():
             {"message": "RAO_GOAL_INVALID: %s" % err, "fatal": True})) + "\n")
         sys.stdout.flush()
         return 2
-    return GoalEngine(goal).run()
+    return GoalEngine(goal, state_dir=state_dir).run()
 
 
 if __name__ == "__main__":

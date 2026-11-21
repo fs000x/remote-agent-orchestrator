@@ -6,7 +6,6 @@ import threading
 from .transport import probe_tcp
 
 DEFAULT_CONFIG_PATHS = [
-    os.environ.get("RAO_CONFIG"),
     os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__)))), "config", "devices.json"),
 ]
@@ -28,9 +27,11 @@ class DeviceRegistry:
     def reload(self):
         with self._lock:
             self.devices = {}
+            self.settings = {}
             if self.path and os.path.isfile(self.path):
                 with open(self.path, "r", encoding="utf-8") as fh:
                     data = json.load(fh)
+                self.settings = data.get("settings", {})
                 for d in data.get("devices", []):
                     if isinstance(d, dict) and d.get("id"):
                         d.setdefault("source", "local")
