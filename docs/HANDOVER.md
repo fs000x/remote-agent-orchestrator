@@ -15,7 +15,7 @@ main 上 tag 链：v0.1.0 → v0.5.0 → v0.6.0 → v0.7.0（各迭代独立分�
 | rao CLI（setup/devices/doctor/uninstall/mcp） | src/rao/cli.py + agents.py | ✅ 真机注入/回滚演练过 |
 | MCP server（6 工具 + DAG/报告） | src/rao/server.py + orchestrator.py | ✅ |
 | 远端 Agent Server（rda-node） | src/rao/runtime/（rda.py/rda_daemon.py） | ✅ executor + claude 双 backend |
-| ZCode 设备/凭据复用 | src/rao/zcode_store.py | ✅ 真机数据解密验证 |
+| ZCode 设备/凭据复用 | （已按产品决策移除 2026-11-21） | 设备仅由用户配置 |
 | 打包 | pyproject.toml + dist/ + plugin/ | ✅ twine PASSED |
 
 ## 2. 怎么跑
@@ -33,7 +33,6 @@ cd remote-agent-orchestrator
 
 1. claude backend 无中途 steer（headless 限制），只能 cancel；
    forbidden 为软约束（--append-system-prompt）。
-2. ZCode 凭据解密仅 Windows 路径实现；Linux Secret Service 待接。
 3. Codex 只有检测留位，注入未实现。
 4. `zcode-remote`（借道桌面 app-server 驱动远端会话）为实验项，未排期。
 5. devices_list 的 agent_claude 能力默认 unknown，需 rao doctor/recon 探测。
