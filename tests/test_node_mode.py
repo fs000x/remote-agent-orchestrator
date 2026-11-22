@@ -76,8 +76,11 @@ def test_node_mode_registration_and_goal(tmp_path, node_env):
         assert run.result["status"] == "success", run.result["summary"]
 
         # steer（门闩模式）
+        release = os.path.join(str(tmp_path), "rao-node-release")
+        if os.path.exists(release):
+            os.remove(release)
         goal2 = _goal(plan={"steps": [
-            {"id": "hold", "type": "wait_file", "path": "/tmp/rao-node-rel",
+            {"id": "hold", "type": "wait_file", "path": release,
              "timeoutMs": 30000},
             {"id": "s2", "type": "shell", "command": "echo plain-done",
              "success": {"exitCode": 0}}]})
@@ -90,6 +93,8 @@ def test_node_mode_registration_and_goal(tmp_path, node_env):
                 break
             time.sleep(0.05)
         assert run2.steer(message="run:echo node-steered")
+        with open(release, "w", encoding="utf-8") as fh:
+            fh.write("release")   # 释放门闩
         assert run2.wait_terminal(30)
         assert run2.result["status"] == "success"
 

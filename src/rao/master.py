@@ -237,24 +237,31 @@ class MasterServer:
             return
         ch.push(msg)
 
-    def inject(self, node_id, goal_id, payload, wait_ack_s=5.0):
-        """Control-plane inject over the node connection; waits for receipt."""
-        ack_id = "ack-%d" % int(time.monotonic() * 1000)
-        with self.lock:
-            ch = self.goal_channels.get(goal_id)
-        self.send_to_node(node_id, {"cmd": "inject", "goalId": goal_id,
-                                    "payload": payload, "ack": ack_id})
-        deadline = time.monotonic() + wait_ack_s
-        if ch is None:
-            return False
-        with ch._cond:
-            while True:
-                if ack_id in ch.receipts:
-                    return ch.receipts[ack_id].get("queued") == "delivered"
-                remaining = deadline - time.monotonic()
-                if remaining <= 0 or ch.closed:
-                    return False
-                ch._cond.wait(remaining)
+    def inject(self, node_id, goal_id, payload, wait_ack_s=5.0,
+               retries=3):
+        """Control-plane inject over the node connection; waits for receipt.
+        Retries on timeout — the node's pending queue makes re-delivery safe."""
+        for attempt in range(retries):
+            ack_id = "ack-%d-%d" % (int(time.monotonic() * 1000), attempt)
+            with self.lock:
+                ch = self.goal_channels.get(goal_id)
+            if ch is None:
+                return False
+            self.send_to_node(node_id, {"cmd": "inject", "goalId": goal_id,
+                                        "payload": payload, "ack": ack_id})
+            deadline = time.monotonic() + wait_ack_s
+            with ch._cond:
+                while True:
+                    if ack_id in ch.receipts:
+                        return ch.receipts[ack_id].get("queued") == "delivered"
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or ch.closed:
+                        break
+                    ch._cond.wait(remaining)
+            if ch.closed:
+                return False
+            time.sleep(1.0)   # receipt lost: retry with a fresh ack
+        return False
 
     def detach(self, goal_id):
         with self.lock:
