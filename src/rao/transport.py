@@ -956,6 +956,23 @@ class SshDaemonTransport:
         except TransportError:
             return False
 
+    def goal_events(self, device, goal_id):
+        """v0.9.1: authoritative event list from the daemon (reconcile the
+        client-side mirror after reconnects). Returns list or None."""
+        import json as _json
+        rd = self._dev_rda_dir(device)
+        cmd = ("cd %s && python3 rda_daemon.py status-one "
+               "--goal-id %s" % (rd, goal_id))
+        rc, out = self._exec(device, cmd, timeout_s=15)
+        for line in out.strip().splitlines():
+            try:
+                m = json.loads(line)
+            except ValueError:
+                continue
+            if m.get("type") == "goal_snapshot":
+                return m.get("events") or []
+        return None
+
     def open_session(self, goal_id, device, goal_obj):
         chan = SshDaemonChannel(goal_id, device, self._password_of(device),
                                 self._dev_rda_dir(device))

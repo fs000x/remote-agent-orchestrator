@@ -706,6 +706,8 @@ def main():
     p_start.add_argument("--token", help="master enrollment token")
     sub.add_parser("ping")
     sub.add_parser("stop")
+    p_stat = sub.add_parser("status-one")
+    p_stat.add_argument("--goal-id", required=True)
     sub.add_parser("client-bridge")
     p_inj = sub.add_parser("inject-one")
     p_inj.add_argument("--goal-id", required=True)
@@ -728,6 +730,24 @@ def main():
         if args.payload_b64:
             payload_json = _b64.b64decode(args.payload_b64).decode("utf-8")
         return cmd_inject_one(args.goal_id, payload_json)
+    if args.cmd == "status-one":
+        dj = load_daemon_json()
+        if not dj:
+            print(json.dumps({"type": "error", "message": "daemon not running"}))
+            return 1
+        try:
+            lines = _local_client(dj["port"], dj["token"],
+                                  [{"cmd": "status",
+                                    "goalId": args.goal_id}],
+                                  read_timeout_s=5)
+        except Exception as exc:
+            print(json.dumps({"type": "error", "message": str(exc)}))
+            return 1
+        snap = next((m for m in lines if m.get("type") == "goal_snapshot"),
+                    None)
+        print(json.dumps(snap or {"type": "error", "message": "no snapshot"},
+                         ensure_ascii=False))
+        return 0 if snap else 1
     if args.cmd == "client-bridge":
         return cmd_bridge()
     ap.print_help()
