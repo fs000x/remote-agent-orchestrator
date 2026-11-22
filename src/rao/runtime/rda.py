@@ -341,6 +341,14 @@ class GoalEngine(object):
         forbidden -> appended system prompt (soft). No mid-run steering."""
         claude_bin = shutil.which("claude")
         if not claude_bin:
+            # v0.10: claude self-updates can break the PATH symlink (npm
+            # native-binary distribution) — probe common install locations
+            for cand in ("/usr/local/bin/claude", "/usr/bin/claude",
+                         os.path.expanduser("~/.local/bin/claude"),
+                         os.path.expanduser("~/.claude/local/claude")):
+                if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                    claude_bin = cand
+                    break
             self.emit(protocol.KIND_ERROR,
                       {"message": "claude CLI not found on device; "
                                   "agent backend unavailable", "fatal": True})

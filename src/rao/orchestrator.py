@@ -359,7 +359,8 @@ class GoalRun:
                         self.device, self.goal_id)
                     if evs and len(evs) > len(self.chan.events or []):
                         self.chan.events = evs
-                        self.chan.event_seqs = [None] * len(evs)
+                        # authoritative buffer order == emission order
+                        self.chan.event_seqs = list(range(1, len(evs) + 1))
                 except Exception:
                     pass
             self.chan.close()
