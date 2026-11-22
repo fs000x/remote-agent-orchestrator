@@ -603,6 +603,28 @@ class GoalEngine(object):
                         break
                 tools[t] = bool(path)
             facts["tools"] = tools
+            # v0.9: agent/ZCode-Server detection (capability reporting)
+            agents = {}
+            agents["claude"] = bool(shutil.which("claude"))
+            agents["codex"] = bool(shutil.which("codex"))
+            zs = {"installed": os.path.isdir(
+                os.path.join(os.path.expanduser("~"), ".zcode", "server")),
+                "version": None, "running": False, "pid": None}
+            if zs["installed"]:
+                try:
+                    with open(os.path.join(os.path.expanduser("~"),
+                                           ".zcode", "server", "run",
+                                           "status.json")) as fh:
+                        st = json.load(fh)
+                    zs["version"] = st.get("version")
+                    zs["pid"] = st.get("pid")
+                    zs["running"] = (st.get("state") == "ready"
+                                     and st.get("pid") and
+                                     os.path.isdir("/proc/%d" % st["pid"]))
+                except Exception:
+                    pass
+            agents["zcode_server"] = zs
+            facts["agents"] = agents
             ws = self.goal.get("workspace")
             if ws and os.path.isdir(ws):
                 entries = sorted(os.listdir(ws))[:30]
