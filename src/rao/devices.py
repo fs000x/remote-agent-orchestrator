@@ -28,6 +28,7 @@ class DeviceRegistry:
         with self._lock:
             self.devices = {}
             self.settings = {}
+            self._merge_registered_nodes()
             if self.path and os.path.isfile(self.path):
                 with open(self.path, "r", encoding="utf-8") as fh:
                     data = json.load(fh)
@@ -37,6 +38,32 @@ class DeviceRegistry:
                         d.setdefault("source", "local")
                         self.devices[d["id"]] = d
         return dict(self.devices)
+
+    def _merge_registered_nodes(self):
+        """v0.10: nodes registered with the rao master appear automatically
+        (transport=node). devices.json entries win on id collision."""
+        nodes_path = os.path.join(
+            os.environ.get("RAO_STATE_DIR") or os.path.join(
+                os.path.expanduser("~"), ".rao"), "nodes.json")
+        try:
+            with open(nodes_path, encoding="utf-8") as fh:
+                nodes = json.load(fh)
+        except (OSError, ValueError):
+            return
+        for nid, rec in nodes.items():
+            if nid in self.devices:
+                continue
+            info = rec.get("capabilities", {}) or {}
+            self.devices[nid] = {
+                "id": nid,
+                "host": rec.get("peer") or info.get("host"),
+                "port": None,
+                "user": info.get("user"),
+                "workspace": info.get("workspace"),
+                "transport": "node",
+                "source": "node",
+                "maxConcurrentGoals": info.get("maxConcurrentGoals", 2),
+            }
 
     def list_ids(self):
         with self._lock:
@@ -72,8 +99,8 @@ class DeviceRegistry:
                     "agent_claude": "unknown", # 需远端探测（rao doctor / recon）
                 },
             }
-            if probe:
-                entry["online"] = probe_tcp(d.get("host"), int(d.get("port", 22)))
+            if probe and d.get("port") is not None:
+                entry["online"] = probe_tcp(d.get("host"), int(d["port"]))
             pw = self.password_of(d)
             entry["authConfigured"] = bool(pw)
             out.append(entry)
