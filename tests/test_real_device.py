@@ -430,14 +430,22 @@ def test_t20_capability_matrix_fields():
 
 def test_t21_claude_backend_fast_fail_without_claude(orch):
     """远端无 claude CLI → agent backend 快速失败并给出清晰原因。
-    （远端装好 claude 并登录后，同一 goal 将整目标托管成功——见文档）"""
+    v0.10 回退探测会命中 npm 包内二进制，因此需同时移走 PATH 链接与包内
+    二进制，才能真正模拟"无 claude"场景。"""
+    pw = reg.require(DEVICE_ID).get("auth", {}).get("password") or ""
+    pkg_bin = ("/usr/lib/node_modules/@anthropic-ai/"
+               "claude-code/bin/claude.exe")
     rc, out, _ = _remote_exec("which claude >/dev/null 2>&1 && echo yes || echo no")
     if out.strip() == "yes":
-        # claude 在 /usr/bin（root 所有），移动需 sudo（密码与 SSH 相同）
         rc2, _, _ = _remote_exec(
             "echo %s | sudo -S mv $(which claude) $(which claude).bak"
-            % (reg.require(DEVICE_ID).get("auth", {}).get("password") or ""))
+            % pw)
         assert rc2 == 0, "sudo mv claude failed"
+    # 包内二进制也移走（回退探测的第一候选）
+    rc3, _, _ = _remote_exec(
+        "echo %s | sudo -S bash -c "
+        "'test -f %s && mv %s %s.bak' 2>/dev/null; true"
+        % (pw, pkg_bin, pkg_bin, pkg_bin))
     try:
         goal = _goal(agent="claude",
                      objective="whatever the remote agent decides to do",
@@ -447,6 +455,11 @@ def test_t21_claude_backend_fast_fail_without_claude(orch):
         assert run.result["status"] == "failed"
         assert "claude CLI not found" in run.result["summary"]
     finally:
+        # 恢复包内二进制与链接（顺序：先包内，再链接）
+        _remote_exec(
+            "echo %s | sudo -S bash -c "
+            "'test -f %s.bak && mv %s.bak %s' 2>/dev/null; true"
+            % (pw, pkg_bin, pkg_bin, pkg_bin))
         if out.strip() == "yes":
             _remote_exec(
                 "echo %s | sudo -S bash -c "

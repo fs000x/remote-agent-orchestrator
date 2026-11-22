@@ -159,3 +159,33 @@
   RU3（durationMs）/ RU4（跨进程 collect）/ RU5（无 protocol dispatch）/ RU6（rao run）
 - 全量 84 测试绿；真机 daemon 时间线核实（sleep 20 真实执行 20s，steer 竞态由
   门闩模式消除）
+
+## 2026-11-22（续）：远端 Claude 落地 + 真实场景修复（v0.10.0）
+
+### 远端 Claude 安装
+- Node v10 → v20.20.2（NodeSource，无 npm → sudo 装 nodejs）
+- Claude Code 2.1.197 → 自更新升 2.1.330（原生二进制分发，bin/claude.exe 381MB）
+- API 模式配置部署：~/.claude/settings.json（env: ANTHROPIC_API_KEY/BASE_URL/MODEL=
+  deepseek-flash），chmod 600；用户填 key/URL 后冒烟成功（DeepSeek 网关接受
+  deepseek-flash[1m] 模型串）
+
+### 三个修复（本地桥确定性复现 → 真机验证）
+1. **桥读泵 5 秒超时死亡（B1 终版根因）**：`socket.create_connection(timeout=5)` 的
+   超时传导给 makefile → 读泵在 5 秒事件静默后 TimeoutError 死亡 → os._exit(3) →
+   事件流冻结。修复：`sock.settimeout(None)`（事件流阻塞读）。
+2. **queue_steps 重算条件 `<` bug**：steer 的 run: 指令追加后恰逢长度相等 → 不重算 →
+   steered 步骤被吞。修复为 `!=`。
+3. **claude 探测回退缩进错误**：回退循环命中包内二进制后仍无条件报 not found
+   （emit/return 缩进在 for 循环后、if 块内）→ 修复缩进 + 回退候选加入包内二进制
+   （claude 自更新会删除 /usr/bin/claude 链接并原地更新包内二进制）。
+4. **daemon 多实例堆积**：provision 重启失效多次累积 → 不同版本 daemon 并存 →
+   goal 桥随机连旧实例 → "claude CLI not found" 取决于桥命中哪个实例。
+   修复：单实例保证（pkill 所有 serve → 确认全停 → 启动一个 → ping 验证）。
+5. **事件镜像对账（v0.9.1）**：goal 终态后从 daemon status-one 回载权威事件缓冲
+   （SSH 流事件丢失的观测兜底），event_seqs 填 1..N。
+
+### 真实场景测试（test_claude_real.py，真机 Claude 全链路）
+- TC-A claude backend 冒烟 / TC-B 开放性任务自主执行（创建脚本→运行→写工件，
+  真机 artifact 断言）/ TC-C 运行中取消 / TC-D constraints 透传
+- T21 改造：回退探测命中包内二进制后，需同时移走链接与包内二进制才能模拟"无 claude"
+- 90 测试全绿；tag v0.10.0 推送 GitHub

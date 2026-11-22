@@ -18,6 +18,16 @@ def local_hashes():
         path = os.path.join(base, name)
         with open(path, "rb") as fh:
             out[name] = hashlib.sha256(fh.read()).hexdigest()
+    # v0.10: combined runtime hash (matches daemon.json codeHash, which the
+    # daemon computes over ALL runtime files — any single-file change must
+    # trigger a daemon restart)
+    h = hashlib.sha256()
+    for name in sorted(RDA_FILES):
+        path = os.path.join(base, name)
+        h.update(name.encode())
+        with open(path, "rb") as fh:
+            h.update(fh.read())
+    out["__combined__"] = h.hexdigest()
     return out
 
 

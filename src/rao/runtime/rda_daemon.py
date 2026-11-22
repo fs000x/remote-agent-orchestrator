@@ -452,8 +452,16 @@ def cmd_serve(port, master=None, node_token=None):
     state = DaemonState(token)
     server = DaemonServer(("127.0.0.1", port), Handler)
     server.daemon = state
-    code_hash = hashlib.sha256(
-        open(os.path.abspath(__file__), "rb").read()).hexdigest()
+    # v0.10: hash the WHOLE runtime (rda.py changes alone must trigger
+    # daemon restart, else the in-memory GoalEngine stays stale)
+    h = hashlib.sha256()
+    base = os.path.dirname(os.path.abspath(__file__))
+    for name in sorted(("rda_daemon.py", "rda.py", "protocol.py")):
+        fp = os.path.join(base, name)
+        if os.path.isfile(fp):
+            h.update(name.encode())
+            h.update(open(fp, "rb").read())
+    code_hash = h.hexdigest()
     with open(DAEMON_JSON, "w", encoding="utf-8") as fh:
         json.dump({"pid": os.getpid(), "port": port, "token": token,
                    "version": DAEMON_VERSION, "codeHash": code_hash,

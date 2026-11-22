@@ -884,42 +884,31 @@ class SshDaemonTransport:
         if r.get("error"):
             raise TransportError("RAO_DEVICE_UNREACHABLE",
                                  "provision failed: %s" % r["error"])
-        # v0.9: restart the daemon when its in-memory code differs from the
-        # local runtime. Detection via codeHash recorded in daemon.json at
-        # serve start (old daemons without the field are treated as stale).
+        # v0.10: SINGLE-INSTANCE guarantee. Multiple daemons of different code
+        # versions cause goal bridges to randomly attach to a stale engine
+        # (field bug: "claude CLI not found" depended on which daemon the
+        # bridge hit). Kill ALL serve processes, then start exactly one.
         import time
-        local_hash = local_hashes().get("rda_daemon.py")
         ping = "cd %s && python3 rda_daemon.py ping" % rd
-        rc_p, _ = self._exec(device, ping)
-        if rc_p == 0:
-            rc_d, out_d = self._exec(
-                device,
-                'python3 -c "import json,os;print(json.load(open(os.path.expanduser'
-                '(\"~/.rao/daemon.json\"))).get(\"codeHash\",\"\"))"')
-            running_hash = out_d.strip()
-            if running_hash != local_hash:
-                self._exec(device, "cd %s && python3 rda_daemon.py stop" % rd)
-                for _ in range(15):
-                    rc_p, _ = self._exec(device, ping)
-                    if rc_p != 0:
-                        break
-                    time.sleep(0.3)
-                rc_p = 1   # force the start below
-        else:
-            rc_p = 1       # daemon down: force the start below
-        if rc_p != 0:
-            self._exec(device, "cd %s && python3 rda_daemon.py start" % rd,
-                       timeout_s=25)
-            up = False
-            for _ in range(15):
-                rc_p, _ = self._exec(device, ping)
-                if rc_p == 0:
-                    up = True
-                    break
-                time.sleep(0.3)
-            if not up:
-                raise TransportError("RAO_DEVICE_UNREACHABLE",
-                                     "daemon failed to start")
+        self._exec(device, "pkill -f 'rda_daemon.py serve' 2>/dev/null; true",
+                   timeout_s=10)
+        for _ in range(15):
+            rc_p, _ = self._exec(device, ping)
+            if rc_p != 0:
+                break
+            time.sleep(0.3)
+        self._exec(device, "cd %s && python3 rda_daemon.py start" % rd,
+                   timeout_s=25)
+        up = False
+        for _ in range(15):
+            rc_p, _ = self._exec(device, ping)
+            if rc_p == 0:
+                up = True
+                break
+            time.sleep(0.3)
+        if not up:
+            raise TransportError("RAO_DEVICE_UNREACHABLE",
+                                 "daemon failed to start")
         return r
 
     def _dev_rda_dir(self, device):
