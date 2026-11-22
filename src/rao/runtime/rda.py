@@ -353,6 +353,10 @@ class GoalEngine(object):
         cmd = [claude_bin, "-p", self.goal.get("objective", ""),
                "--output-format", "stream-json", "--verbose",
                "--max-turns", str(max_turns)]
+        # v0.10: autonomous tool use requires skipping interactive permission
+        # prompts in headless mode (opt-in via constraints.claudeAutoApprove)
+        if c.get("claudeAutoApprove"):
+            cmd += ["--dangerously-skip-permissions"]
         forbidden = c.get("forbidden", []) or []
         if forbidden:
             cmd += ["--append-system-prompt",

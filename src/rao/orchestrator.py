@@ -351,6 +351,17 @@ class GoalRun:
                            "steps": [], "artifacts": [], "assumptions": [],
                            "metrics": {}}
         if self.chan is not None:
+            # v0.9.1: reconcile the event mirror with the daemon's
+            # authoritative buffer (SSH-stream event loss after reconnects)
+            if hasattr(self.orch.transport, "goal_events"):
+                try:
+                    evs = self.orch.transport.goal_events(
+                        self.device, self.goal_id)
+                    if evs and len(evs) > len(self.chan.events or []):
+                        self.chan.events = evs
+                        self.chan.event_seqs = [None] * len(evs)
+                except Exception:
+                    pass
             self.chan.close()
         self.orch.run_store.save(self)
         self._finalized = True
