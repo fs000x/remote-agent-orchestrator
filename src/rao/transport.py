@@ -967,3 +967,68 @@ class SshDaemonTransport:
                                 self._dev_rda_dir(device))
         chan.connect_and_start(None, resume=True)
         return chan
+
+
+# ---------------------------------------------------------------------------
+# Node mode (v0.10): nodes dial INTO the master; transport rides the master
+# connection. See PROTOCOL-NODE.md.
+# ---------------------------------------------------------------------------
+
+
+class NodeTransport:
+    """Transport for node-mode devices (rides the master connection).
+
+    Goal channels live in the MasterServer (GoalChannel); this transport is a
+    thin handle that returns them to GoalRun._pump_daemon."""
+
+    def __init__(self, master):
+        self.master = master   # rao.master.MasterServer instance
+
+    def open_session(self, goal_id, device, goal_obj):
+        ch = self.master.get_node_channel(device["id"], goal_id)
+        ch.send_goal(goal_obj)
+        return ch
+
+    def open_resume_session(self, goal_id, device):
+        ch = self.master.get_node_channel(device["id"], goal_id)
+        ch.send_attach(goal_id)
+        return ch
+
+    def steer(self, device, goal_id, payload):
+        return self.master.inject(device["id"], goal_id, payload)
+
+    def provision(self, device):
+        return {"checked": True, "deployed": False}   # node self-manages
+
+
+class MultiTransport:
+    """Routes per device: transport="node" -> NodeTransport, else SSH."""
+
+    def __init__(self, ssh_transport, node_transport):
+        self.ssh = ssh_transport
+        self.node = node_transport
+
+    def _for(self, device):
+        return self.node if device.get("transport") == "node" else self.ssh
+
+    def open_session(self, goal_id, device, goal_obj):
+        return self._for(device).open_session(goal_id, device, goal_obj)
+
+    def open_resume_session(self, goal_id, device):
+        return self._for(device).open_resume_session(goal_id, device)
+
+    def steer(self, device, goal_id, payload):
+        if device.get("transport") == "node" and self.node is not None:
+            return self.node.steer(device, goal_id, payload)
+        t = self._for(device)
+        if hasattr(t, "steer"):
+            return t.steer(device, goal_id, payload)
+        return False
+
+    def provision(self, device):
+        if device.get("transport") == "node" and self.node is not None:
+            return self.node.provision(device)
+        t = self._for(device)
+        if hasattr(t, "provision"):
+            return t.provision(device)
+        return {"checked": False}

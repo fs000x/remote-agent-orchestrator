@@ -433,7 +433,11 @@ def test_t21_claude_backend_fast_fail_without_claude(orch):
     （远端装好 claude 并登录后，同一 goal 将整目标托管成功——见文档）"""
     rc, out, _ = _remote_exec("which claude >/dev/null 2>&1 && echo yes || echo no")
     if out.strip() == "yes":
-        rc2, _, _ = _remote_exec("mv $(which claude) $(which claude).bak")
+        # claude 在 /usr/bin（root 所有），移动需 sudo（密码与 SSH 相同）
+        rc2, _, _ = _remote_exec(
+            "echo %s | sudo -S mv $(which claude) $(which claude).bak"
+            % (reg.require(DEVICE_ID).get("auth", {}).get("password") or ""))
+        assert rc2 == 0, "sudo mv claude failed"
     try:
         goal = _goal(agent="claude",
                      objective="whatever the remote agent decides to do",
@@ -444,4 +448,8 @@ def test_t21_claude_backend_fast_fail_without_claude(orch):
         assert "claude CLI not found" in run.result["summary"]
     finally:
         if out.strip() == "yes":
-            _remote_exec("mv $(which claude).bak $(which claude)")
+            _remote_exec(
+                "echo %s | sudo -S bash -c "
+                "'test -f $(which claude).bak && mv $(which claude).bak $(which claude)' "
+                "2>/dev/null; true"
+                % (reg.require(DEVICE_ID).get("auth", {}).get("password") or ""))

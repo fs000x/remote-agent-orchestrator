@@ -16,7 +16,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from rao import protocol  # noqa: E402
 from rao.devices import DeviceRegistry  # noqa: E402
 from rao.orchestrator import Orchestrator  # noqa: E402
-from rao.transport import SshTransport, SshDaemonTransport  # noqa: E402
+from rao.transport import (SshTransport, SshDaemonTransport,  # noqa: E402
+                           NodeTransport, MultiTransport)
+from rao.master import start_master_thread  # noqa: E402
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -29,27 +31,43 @@ registry = DeviceRegistry()
 
 def _build_transport():
     """transportMode: spawn | daemon | auto (default, from devices.json
-    settings). auto probes the persistent daemon once; falls back to spawn."""
+    settings). auto probes the persistent daemon once; falls back to spawn.
+    Registered nodes (transport=node) ride MultiTransport/NodeTransport."""
     settings = registry.settings or {}
     rda_dir = settings.get("rdaDir",
                            "/home/diablo/git500/zcode_prj/rao")
     mode = settings.get("transportMode", "auto")
     if mode == "spawn":
-        return SshTransport(rda_dir=rda_dir)
+        ssh_t = SshTransport(rda_dir=rda_dir)
+        return MultiTransport(ssh_t, None) if _nodes_registered() else ssh_t
     daemon_t = SshDaemonTransport(rda_dir=rda_dir)
     if mode == "daemon":
-        return daemon_t
+        return _wrap(daemon_t)
     try:
-        ids = registry.list_ids()
+        ids = [i for i in registry.list_ids()
+               if (registry.get(i) or {}).get("transport") != "node"]
         if ids and daemon_t.ensure_daemon(registry.require(ids[0])):
             log.info("transport mode: daemon (probe ok)")
-            return daemon_t
+            return _wrap(daemon_t)
     except Exception as exc:
         log.warning("daemon probe failed: %s", exc)
     log.info("transport mode: spawn (daemon unavailable)")
-    return SshTransport(rda_dir=rda_dir)
+    return _wrap(SshTransport(rda_dir=rda_dir))
 
 
+def _nodes_registered():
+    return bool(master_server and master_server.registered_devices())
+
+
+def _wrap(ssh_t):
+    if master_server is not None and master_server.registered_devices():
+        return MultiTransport(ssh_t, NodeTransport(master_server))
+    return ssh_t
+
+
+master_server = start_master_thread(
+    port=(registry.settings or {}).get("masterPort", 9700),
+    registry=registry)
 orch = Orchestrator(registry, transport=_build_transport(),
                     runs_dir=(registry.settings or {}).get("runsDir"))
 

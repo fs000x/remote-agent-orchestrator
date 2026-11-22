@@ -92,6 +92,8 @@ def test_inject_claude_uses_mcpServers_key(fake_home):
 
 # --- device add/remove via registry file -----------------------------------
 def test_devices_add_remove(tmp_path, monkeypatch):
+    # 注册节点自动并入会让本断言混入额外设备——隔离到空注册表
+    monkeypatch.setattr(DeviceRegistry, "_merge_registered_nodes", lambda self: None)
     cfg = tmp_path / "devices.json"
     monkeypatch.setattr(DeviceRegistry, "_find_config", lambda self: str(cfg))
     reg = DeviceRegistry(config_path=str(cfg))

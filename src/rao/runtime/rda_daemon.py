@@ -32,6 +32,7 @@ import argparse
 import hashlib
 import json
 import os
+import platform
 import secrets
 import socket
 import socketserver
@@ -349,9 +350,99 @@ class DaemonServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
-def cmd_serve(port):
+def master_link_loop(state, host, mport, enroll_token, node_id):
+    """v0.10 node mode: dial the master, register, heartbeat, forward goal
+    events, and handle inject commands over the outbound connection."""
+    backoff = 0.5
+    while True:
+        sock = None
+        f = None
+        try:
+            sock = socket.create_connection((host, mport), timeout=10)
+            f = sock.makefile("rwb")
+            caps = {"os": platform.system(),
+                    "python": sys.version.split()[0],
+                    "user": os.environ.get("USER") or os.environ.get(
+                        "USERNAME") or "?"}
+            f.write((json.dumps({"cmd": "register", "nodeId": node_id,
+                                 "token": enroll_token,
+                                 "capabilities": caps}) + "\n").encode("utf-8"))
+            f.flush()
+            reply = json.loads(f.readline().decode("utf-8", "replace"))
+            if reply.get("type") != "registered":
+                log("register rejected: %s" % reply)
+                time.sleep(5.0)
+                continue
+            log("registered with master %s:%s" % (host, mport))
+            backoff = 0.5
+
+            def fwd(msg):
+                f.write((json.dumps(msg, ensure_ascii=False) + "\n")
+                        .encode("utf-8"))
+                f.flush()
+
+            # resubscribe running goals to this connection
+            with state.goals_lock:
+                for rec in state.goals.values():
+                    if rec.status == "running":
+                        rec.subscribers.append(fwd)
+
+            # master -> node commands
+            while True:
+                raw = f.readline()
+                if not raw:
+                    raise ConnectionError("master link EOF")
+                msg = json.loads(raw.decode("utf-8", "replace"))
+                cmd = msg.get("cmd")
+                if cmd == "goal":
+                    gid = (msg.get("goal") or {}).get("goalId") or \
+                        protocol.new_goal_id()
+                    g = dict(msg["goal"])
+                    g["goalId"] = gid
+                    rec = state.submit(g)
+                    rec.subscribers.append(fwd)   # events stream to master
+                    fwd({"type": "goal_accepted", "goalId": gid})
+                elif cmd == "attach":
+                    gid = msg.get("goalId")
+                    rec = state.goals.get(gid)
+                    if rec is None:
+                        fwd({"type": "error", "goalId": gid,
+                             "message": "unknown goalId"})
+                        continue
+                    with rec.lock:
+                        base = rec.trimmed
+                        evs = list(rec.events)
+                    for i, ev in enumerate(evs):
+                        fwd({"type": "event", "goalId": gid, "event": ev,
+                             "seq": base + i + 1})
+                    if rec.status != "running":
+                        fwd({"type": "goal_status", "goalId": gid,
+                             "status": rec.status, "exit": rec.exit_code})
+                    else:
+                        rec.subscribers.append(fwd)
+                elif cmd == "inject":
+                    rec = state.goals.get(msg.get("goalId"))
+                    payload = msg.get("payload", {})
+                    if rec is None or rec.engine is None:
+                        fwd({"type": "receipt", "goalId": msg.get("goalId"),
+                             "ack": msg.get("ack"), "queued": "dropped",
+                             "reason": "engine not ready"})
+                    else:
+                        rec.engine.injections.q.put(payload)
+                        fwd({"type": "receipt", "goalId": msg.get("goalId"),
+                             "ack": msg.get("ack"), "queued": "delivered"})
+                elif cmd == "ping":
+                    fwd({"type": "pong", "ts": protocol.now_ms()})
+        except Exception as exc:
+            log("master link lost: %r" % exc)
+        time.sleep(backoff)
+        backoff = min(backoff * 2, 30.0)
+
+
+def cmd_serve(port, master=None, node_token=None):
     os.makedirs(RAO_DIR, exist_ok=True)
     token = secrets.token_hex(16)
+    enroll_token = node_token   # v0.10: master's enrollment token (via --token)
     if port == 0:
         # pick a free port
         s = socket.socket()
@@ -370,6 +461,12 @@ def cmd_serve(port):
     if os.name != "nt":
         os.chmod(DAEMON_JSON, 0o600)
     threading.Thread(target=state.heartbeat_loop, daemon=True).start()
+    if master:
+        host, _, mport = master.rpartition(":")
+        threading.Thread(target=master_link_loop, daemon=True,
+                         args=(state, host or "127.0.0.1", int(mport),
+                               enroll_token, socket.gethostname()),
+                         name="rao-master-link").start()
     log("serving on 127.0.0.1:%d" % port)
     try:
         server.serve_forever()
@@ -426,7 +523,7 @@ def _local_client(port, token, messages, read_timeout_s=5):
         sock.close()
 
 
-def cmd_start(port):
+def cmd_start(port, master=None, node_token=None):
     os.makedirs(RAO_DIR, exist_ok=True)
     dj = load_daemon_json()
     if dj and _alive(dj):
@@ -438,9 +535,14 @@ def cmd_start(port):
     else:
         kwargs["start_new_session"] = True
     logf = open(DAEMON_LOG, "ab")
+    serve_argv = [sys.executable, os.path.abspath(__file__), "serve",
+                  "--port", str(port or 0)]
+    if master:
+        serve_argv += ["--master", master]
+    if node_token:
+        serve_argv += ["--token", node_token]
     subprocess.Popen(
-        [sys.executable, os.path.abspath(__file__), "serve",
-         "--port", str(port or 0)],
+        serve_argv,
         stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, **kwargs)
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
@@ -596,8 +698,12 @@ def main():
     sub = ap.add_subparsers(dest="cmd")
     p_serve = sub.add_parser("serve")
     p_serve.add_argument("--port", type=int, default=0)
+    p_serve.add_argument("--master", help="master endpoint host:port (node mode)")
+    p_serve.add_argument("--token", help="master enrollment token (node mode)")
     p_start = sub.add_parser("start")
     p_start.add_argument("--port", type=int, default=0)
+    p_start.add_argument("--master", help="master endpoint host:port")
+    p_start.add_argument("--token", help="master enrollment token")
     sub.add_parser("ping")
     sub.add_parser("stop")
     sub.add_parser("client-bridge")
@@ -609,9 +715,9 @@ def main():
     if args.home:
         _set_home(args.home)
     if args.cmd == "serve":
-        return cmd_serve(args.port)
+        return cmd_serve(args.port, master=args.master, node_token=args.token)
     if args.cmd == "start":
-        return cmd_start(args.port)
+        return cmd_start(args.port, master=args.master, node_token=args.token)
     if args.cmd == "ping":
         return cmd_ping()
     if args.cmd == "stop":
