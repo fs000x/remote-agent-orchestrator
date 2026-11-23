@@ -24,7 +24,7 @@ from rao.orchestrator import Orchestrator  # noqa: E402
 from rao.transport import SshDaemonTransport, probe_tcp, password_of  # noqa: E402
 
 from test_real_device import (  # noqa: E402  (真机 fixtures/助手复用)
-    DEVICE_ID, RDA_DIR, _goal, _remote_exec, _wait, reg,
+    DEVICE_ID, RDA_DIR, WS, _goal, _remote_exec, _wait, reg,
 )
 
 _have = (DEVICE_ID in reg.list_ids()
@@ -34,7 +34,7 @@ _have = (DEVICE_ID in reg.list_ids()
 pytestmark = pytest.mark.skipif(
     not _have, reason="device %s unreachable or no credentials" % DEVICE_ID)
 
-CLAUDE_WS = "/home/diablo/rao_claude_test"
+CLAUDE_WS = WS + "/rao_claude_test"
 
 
 @pytest.fixture(scope="module")

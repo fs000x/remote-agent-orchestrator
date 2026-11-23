@@ -25,7 +25,7 @@ from rao.orchestrator import Orchestrator  # noqa: E402
 from rao.transport import SshTransport, SshDaemonTransport, probe_tcp  # noqa: E402
 
 from test_real_device import (  # noqa: E402
-    DEVICE_ID, RDA_DIR, OUT_DIR, _goal, _remote_exec, _wait, reg,
+    DEVICE_ID, RDA_DIR, OUT_DIR, RDA_HOST, _goal, _remote_exec, _wait, reg,
     password_of,
 )
 
@@ -61,7 +61,7 @@ def daemon_orch(tmp_path_factory):
 # --- RU1: 用户原始场景（远端 HTTP 服务 + 本地下载 + 清理 + collect） --------
 def test_ru1_remote_http_server_full_flow(orch):
     stamp = protocol.now_ms()
-    webroot = "/home/diablo/rao_http_test_%d" % stamp
+    webroot = "%s/rao_http_test_%d" % (OUT_DIR, stamp)
     fname = "hello-%d.txt" % stamp
     content = "rao-real-usage-%d" % stamp
 
@@ -86,7 +86,7 @@ def test_ru1_remote_http_server_full_flow(orch):
     assert run.result["status"] == "success", run.result["summary"]
 
     # 本地通过 HTTP 真实下载（复刻用户场景）
-    url = "http://192.168.0.100:8899/%s" % fname
+    url = "http://%s:8899/%s" % (RDA_HOST, fname)
     with urllib.request.urlopen(url, timeout=10) as resp:
         body = resp.read().decode("utf-8", "replace")
     assert resp.status == 200

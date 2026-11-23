@@ -1,7 +1,7 @@
 """Real-device integration tests (DESIGN.md §10.1 acceptance table T1-T10).
 
-Run against the configured device (diablo-100 = diablo@192.168.0.100).
-Skipped automatically when the device is unreachable or credentials missing.
+Run against the first configured device (override with RAO_TEST_DEVICE).
+Skipped automatically when no device is configured, reachable, or credentialed.
 
 These exercise Orchestrator + SshTransport + real RDA over SSH — the full
 local side of the system end to end.
@@ -22,15 +22,19 @@ from rao.orchestrator import Orchestrator  # noqa: E402
 from rao.transport import (SshTransport, SshDaemonTransport,  # noqa: E402
                            probe_tcp, password_of)  # noqa: E402
 
-RDA_DIR = os.environ.get("RAO_RDA_DIR", "/home/diablo/git500/zcode_prj/rao")
-DEVICE_ID = os.environ.get("RAO_TEST_DEVICE", "diablo-100")
-OUT_DIR = "/home/diablo/git500/zcode_prj/out"
-
 reg = DeviceRegistry()
+DEVICE_ID = (os.environ.get("RAO_TEST_DEVICE")
+             or (reg.list_ids()[0] if reg.list_ids() else "unconfigured"))
+_DEV = reg.require(DEVICE_ID) if DEVICE_ID in reg.list_ids() else {}
+WS = _DEV.get("workspace") or "/home/user/project"
+OUT_DIR = WS + "/out"
+RDA_DIR = (os.environ.get("RAO_RDA_DIR") or _DEV.get("rdaDir")
+           or "$HOME/.rao/runtime")
+RDA_HOST = _DEV.get("host") or ""
+_pw_ok = bool(_DEV) and bool(password_of(_DEV))
+_net_ok = bool(_DEV) and bool(RDA_HOST) and probe_tcp(
+    RDA_HOST, int(_DEV.get("port") or 22))
 _have_device = DEVICE_ID in reg.list_ids()
-_pw_ok = _have_device and bool(password_of(reg.require(DEVICE_ID)))
-_net_ok = _have_device and probe_tcp(reg.require(DEVICE_ID)["host"],
-                                     int(reg.require(DEVICE_ID).get("port", 22)))
 
 pytestmark = pytest.mark.skipif(
     not (_have_device and _pw_ok and _net_ok),
@@ -91,7 +95,7 @@ def test_t1_devices_list():
 # --- T2 + T10 ------------------------------------------------------------
 def test_t2_t10_goal_closed_loop_with_artifact(orch):
     goal = _goal(
-        workspace="/home/diablo/git500/zcode_prj",
+        workspace=WS,
         objective="collect device facts into artifact",
         plan={"steps": [
             {"id": "mk", "type": "shell",
@@ -257,7 +261,7 @@ def test_t9_forbidden_command_blocked(orch):
 # --- T11 (v0.2): ensureWorkspace on real device ---------------------------
 def test_t11_ensure_workspace_clone(orch):
     # create a fresh origin repo on the device, then let ensureWorkspace clone it
-    ws_root = "/home/diablo/git500/zcode_prj/out"
+    ws_root = OUT_DIR
     origin = "%s/ws-origin-%d" % (ws_root, protocol.now_ms())
     target = "%s/ws-clone-%d" % (ws_root, protocol.now_ms())
     rc, _, err = _remote_exec(
@@ -394,21 +398,21 @@ def test_t16_daemon_stop(daemon_orch):
 
 # --- T17 (v0.4): remote-llm planner slot on real device ---------------------
 def test_t17_remote_planner_slot(orch):
-    stub = "/home/diablo/git500/zcode_prj/out/planner-stub.py"
+    stub = OUT_DIR + "/planner-stub.py"
     planner_cmd = json.dumps(
         {"command": "python3 %s {objective} {recon_file}" % stub})
     rc, _, err = _remote_exec(
-        "mkdir -p /home/diablo/.rao %s && cat > %s <<'PYEOF'\n"
+        "mkdir -p $HOME/.rao %s && cat > %s <<'PYEOF'\n"
         "import json\n"
         "print(json.dumps({'steps': [{'id': 'p1', 'type': 'shell',\n"
         "    'command': 'echo planned-on-remote',\n"
         "    'success': {'exitCode': 0, 'stdoutContains': 'planned-on-remote'}}]}))\n"
         "PYEOF\n"
-        "cat > /home/diablo/.rao/planner.json <<'JEOF'\n"
+        "cat > $HOME/.rao/planner.json <<'JEOF'\n"
         "%s\n"
         "JEOF" % (OUT_DIR, stub, planner_cmd))
     assert rc == 0, err
-    goal = _goal(planner="remote-llm", workspace="/home/diablo/git500/zcode_prj")
+    goal = _goal(planner="remote-llm", workspace=WS)
     ds = orch.dispatch([DEVICE_ID], goal)
     run = _wait(orch, ds[0]["goalId"])
     assert run.result["status"] == "success", run.result["summary"]
@@ -416,7 +420,7 @@ def test_t17_remote_planner_slot(orch):
     kinds = [e["kind"] for e in run.chan.events]
     assert "ask" not in kinds
     # cleanup: remove the planner config so other tests are unaffected
-    _remote_exec("rm -f /home/diablo/.rao/planner.json")
+    _remote_exec("rm -f $HOME/.rao/planner.json")
 
 
 # --- T20/T21 (v0.6): capability matrix + claude backend plumbing ------------

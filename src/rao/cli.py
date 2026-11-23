@@ -56,7 +56,7 @@ def _ask_device_fields(args):
             return default
         v = input("%s%s: " % (prompt, " [%s]" % default if default else ""))
         return v.strip() or default
-    fid = args.id or ask("设备 id (如 diablo-100)")
+    fid = args.id or ask("设备 id (如 my-linux-box)")
     fhost = args.host or ask("主机地址")
     fport = int(args.port or ask("端口", "22"))
     fuser = args.user or ask("SSH 用户")
@@ -138,8 +138,7 @@ def cmd_doctor(args):
 
 
 def _rda_dir(reg):
-    return (reg.settings or {}).get("rdaDir",
-                                    "/home/diablo/git500/zcode_prj/rao")
+    return (reg.settings or {}).get("rdaDir", "$HOME/.rao/runtime")
 
 
 # ------------------------------------------------------------------ run

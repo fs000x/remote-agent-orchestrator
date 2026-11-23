@@ -617,7 +617,7 @@ class DagRun:
 class Orchestrator:
     def __init__(self, registry, transport=None, runs_dir=None,
                  max_concurrent_goals=5, resume_max=RESUME_MAX_DEFAULT,
-                 rda_dir="/home/diablo/git500/zcode_prj/rao"):
+                 rda_dir="$HOME/.rao/runtime"):
         self.registry = registry
         self.transport = transport or SshTransport(rda_dir=rda_dir)
         self.max_concurrent_goals = max_concurrent_goals

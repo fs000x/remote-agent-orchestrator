@@ -34,8 +34,7 @@ def _build_transport():
     settings). auto probes the persistent daemon once; falls back to spawn.
     Registered nodes (transport=node) ride MultiTransport/NodeTransport."""
     settings = registry.settings or {}
-    rda_dir = settings.get("rdaDir",
-                           "/home/diablo/git500/zcode_prj/rao")
+    rda_dir = settings.get("rdaDir", "$HOME/.rao/runtime")
     mode = settings.get("transportMode", "auto")
     if mode == "spawn":
         ssh_t = SshTransport(rda_dir=rda_dir)

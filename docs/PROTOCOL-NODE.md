@@ -78,5 +78,5 @@ steer/cancel: master.steer → 节点连接 inject → 节点回执 → 转发 �
 
 - 本地回环：master + node 同机（tmp home），5 轮 goal/steer/事件连续性（复刻 RU2 门闩模式）
 - 注册：令牌错误拒绝、重复注册覆盖、断线重连后重新注册
-- 真机：diablo-100 以节点模式接入主控，goal + steer 端到端
+- 真机：测试设备以节点模式接入主控，goal + steer 端到端
 - 既有 84 测试不回归（SSH 路径不动）

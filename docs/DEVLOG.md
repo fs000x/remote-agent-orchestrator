@@ -36,7 +36,7 @@
 - 本地：Python 3.13.2（VeighNa 发行版）+ pip。为避免污染用户环境：
   mcp<2（FastMCP API）+ paramiko 装进**项目专属 venv**；user-site 里 mcp/h11 已卸载
   （注：用户主环境 h11 0.14 与 httpcore2 的冲突**预先存在**，与本项目无关）。
-- 远端 diablo-100（192.168.0.100，diablo，Linux x86_64，py3.8.10，2C/7.6G）：
+- 远端测试设备（Linux x86_64，py3.8.10，2C/7.6G）：
   RDA 必须 py3.8 兼容 + 零依赖（stdlib only）。
 - ZCode server 无 headless 会话入口（session-control 未上远端链路，源码核实）；
   本机无 sshpass/plink/expect → 传输层选 paramiko。

@@ -24,7 +24,7 @@ def main():
     reg = DeviceRegistry()
     device_id = sys.argv[1] if len(sys.argv) > 1 else reg.list_ids()[0]
     device = reg.require(device_id)
-    rda_dir = os.environ.get("RAO_RDA_DIR", "/home/diablo/git500/zcode_prj/rao")
+    rda_dir = os.environ.get("RAO_RDA_DIR", "$HOME/.rao/runtime")
     pw = password_of(device)
     if not pw:
         print("ERROR: no password for %s (config or RAO_DEVICE_%s_PASSWORD)"

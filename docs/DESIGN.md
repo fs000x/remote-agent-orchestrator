@@ -32,7 +32,7 @@
 | 远端 agent 自主性 | **半自主** | 用户选择；远端自适应执行 + 升级提问，规划由主 agent 承担（见 §3.3） |
 | 多设备执行 | **并行** | 用户选择；wait-all + 允许部分成功 |
 | 场景范围 | 只做 Agent↔Agent，无被测 APP / adb | 用户明确 |
-| 网络 | 局域网直连 SSH | 现有设备 192.168.0.100 |
+| 网络 | 局域网直连 SSH | 现有设备（内网地址见本地配置） |
 | workspace | 预置（a 方案）起步 | 用户采纳；`ensureWorkspace` 留 roadmap |
 | 技术栈 | Python 3.10+（MCP Server）+ Python 3.8（RDA） | 本机 Python 3.13 + paramiko 已实测打通；ZCode 生态 TS 备选记入 roadmap |
 
@@ -105,9 +105,9 @@ ZCode 主 agent（LLM，唯一规划者）
 {
   "protocol": "rao/1",
   "goalId": "uuid4",
-  "deviceId": "diablo-100",
+  "deviceId": "test-device",
   "objective": "把仓库构建跑通并执行 smoke 测试",
-  "workspace": "/home/diablo/git500/rk3399",
+  "workspace": "/home/user/project",
   "constraints": {
     "maxSteps": 40,            // 步骤预算（含重试）
     "timeoutMs": 600000,       // 整体超时
@@ -122,7 +122,7 @@ ZCode 主 agent（LLM，唯一规划者）
         "id": "s1",
         "type": "shell",                    // shell | ask | artifact | wait_file
         "command": "make -j2",
-        "cwd": "/home/diablo/git500/rk3399",
+        "cwd": "/home/user/project",
         "timeoutMs": 120000,
         "success": { "exitCode": 0 },       // 判据
         "retries": 1,                       // 失败重试次数
@@ -143,7 +143,7 @@ ZCode 主 agent（LLM，唯一规划者）
 
 ```jsonc
 { "protocol": "rao/1", "kind": "started",  "goalId": "...", "ts": 1234567890123,
-  "data": { "rdaVersion": "0.1.0", "python": "3.8.10", "host": "diablo-pc" } }
+  "data": { "rdaVersion": "0.1.0", "python": "3.8.10", "host": "test-device" } }
 { "kind": "recon", "data": { "facts": { "os": "...", "tools": {...}, "workspace": {...} } } }
 { "kind": "ask",  "askId": "a1", "question": "需要任务程序", "context": { "recon": {...} } }
 { "kind": "progress", "data": { "stepId": "s1", "attempt": 1, "phase": "running" } }
@@ -294,7 +294,7 @@ os/uname、python 版本、磁盘、内存、CPU 核数、workspace 目录摘要
 |---|---|---|
 | 单元 | schema 校验、状态机、预算、EventMux、错误归一 | pytest 全绿（transport 用 FakeTransport） |
 | 协议集成 | Orchestrator ⇄ 本地伪 RDA（echo 协议器） | 事件流/steer/cancel 全路径 |
-| 真机集成 | diablo@192.168.0.100 实测 | 见 §10.1 用例表，全部通过 |
+| 真机集成 | 局域网测试设备实测 | 见 §10.1 用例表，全部通过 |
 | MCP 集成 | mcp stdio client 起 rao-mcp 调 6 工具 | 工具返回结构正确 |
 | 端到端 | ZCode 配置 MCP 后由主 agent 实跑 | 真实 goal 闭环 |
 
