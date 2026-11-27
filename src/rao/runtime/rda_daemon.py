@@ -46,7 +46,11 @@ import protocol  # noqa: E402
 from rda import GoalEngine  # noqa: E402
 
 DAEMON_VERSION = "0.3.0"
-RAO_DIR = os.path.join(os.path.expanduser("~"), ".rao")
+# Honour RAO_STATE_DIR like master.py/devices.py do; without this the daemon
+# writes daemon.json/goals into the developer's real ~/.rao even when the
+# caller asked for an isolated state dir (test isolation depends on it).
+RAO_DIR = os.environ.get("RAO_STATE_DIR") or os.path.join(
+    os.path.expanduser("~"), ".rao")
 
 
 def _set_home(home):

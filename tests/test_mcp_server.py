@@ -7,6 +7,7 @@ when unreachable, same guard as test_real_device).
 import json
 import os
 import sys
+import tempfile
 
 import pytest
 
@@ -22,19 +23,28 @@ from rao.transport import probe_tcp, password_of  # noqa: E402
 SERVER = os.path.join(ROOT, "src", "rao", "server.py")
 reg = DeviceRegistry()
 _dev_id = reg.list_ids()[0] if reg.list_ids() else None
-_reachable = bool(_dev_id and probe_tcp(reg.require(_dev_id)["host"],
-                                        int(reg.require(_dev_id).get("port", 22)))
-                  and password_of(reg.require(_dev_id)))
+# node-registered devices carry port=None (they dial out) and no SSH creds
+_first = reg.require(_dev_id) if _dev_id else {}
+_reachable = bool(_dev_id and _first.get("host")
+                  and _first.get("port") is not None
+                  and probe_tcp(_first["host"], int(_first["port"]))
+                  and password_of(_first))
 
 pytestmark = pytest.mark.skipif(_dev_id is None,
                                 reason="no device configured")
 
 
+# Isolate the spawned server's state (master-token / nodes.json / daemon.json)
+# into a temp dir, and keep the parent environment (dropping PATH/HOME broke
+# state resolution and wrote into the developer's real ~/.rao).
+_STATE_DIR = tempfile.mkdtemp(prefix="rao-mcp-state-")
+
+
 def _params():
+    env = dict(os.environ)
+    env["RAO_STATE_DIR"] = _STATE_DIR
     return StdioServerParameters(
-        command=sys.executable, args=[SERVER],
-        env={k: v for k, v in os.environ.items()
-             if k.startswith("RAO_")})
+        command=sys.executable, args=[SERVER], env=env)
 
 
 @pytest.mark.asyncio
