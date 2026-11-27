@@ -99,7 +99,7 @@ def test_tc_b_claude_autonomous_task(dorch):
     # 工件真实存在且内容含主机名
     rc, out, _ = _remote_exec("cat %s/output.txt" % CLAUDE_WS)
     assert rc == 0
-    assert "diablo" in out or os.uname().nodename != ""   # 主机名或时间串
+    assert out.strip(), "output.txt empty (agent produced no output)"
     rc2, out2, _ = _remote_exec("head -3 %s/hello.py" % CLAUDE_WS)
     assert rc2 == 0 and "hello.py" not in out2 or True   # 文件存在即可
     # 清理
