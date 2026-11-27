@@ -22,7 +22,10 @@ class DeviceRegistry:
         for p in DEFAULT_CONFIG_PATHS:
             if p and os.path.isfile(p):
                 return p
-        return DEFAULT_CONFIG_PATHS[1]
+        # Fresh clone: no devices.json yet. Point at the first candidate so
+        # `rao devices add` can create it (reg.reload() tolerates a missing
+        # file). Never index [1]: v0.8 shrank this list to one entry.
+        return DEFAULT_CONFIG_PATHS[0]
 
     def reload(self):
         with self._lock:

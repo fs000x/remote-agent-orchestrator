@@ -57,8 +57,24 @@ def test_claude_backend_success(tmp_path, monkeypatch):
     assert "Bash" in tools
     r.close()
 
+# v0.10 added hard-coded fallback locations probed when `which claude` fails;
+# a host that has one of them cannot simulate "claude missing".
+_CLAUDE_FALLBACKS = [
+    "/usr/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe",
+    "/usr/local/bin/claude", "/usr/bin/claude",
+    os.path.expanduser("~/.local/bin/claude"),
+    os.path.expanduser("~/.claude/local/claude"),
+]
+
+
+@pytest.mark.skipif(any(os.path.isfile(p) for p in _CLAUDE_FALLBACKS),
+                    reason="a fallback claude binary exists on this host")
 def test_claude_backend_missing_cli_fast_fails(tmp_path, monkeypatch):
-    monkeypatch.setattr("shutil.which", lambda name: None)
+    # RdaProc spawns rda.py as a subprocess, so patching shutil.which here
+    # would not reach it — strip PATH in the child environment instead.
+    empty_bin = tmp_path / "empty-bin"
+    empty_bin.mkdir()
+    monkeypatch.setenv("PATH", str(empty_bin))
     g = _goal(agent="claude", objective="x")
     r = RdaProc(g)
     res = r.wait_result(15)

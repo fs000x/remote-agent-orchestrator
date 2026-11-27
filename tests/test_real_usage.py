@@ -30,11 +30,14 @@ from test_real_device import (  # noqa: E402
 )
 
 _have_device = DEVICE_ID in reg.list_ids()
-_net_ok = _have_device and probe_tcp(reg.require(DEVICE_ID)["host"],
-                                     int(reg.require(DEVICE_ID).get("port", 22)))
+_dev_rec = reg.require(DEVICE_ID) if _have_device else {}
+# node-registered devices carry port=None (they dial out) and no SSH
+# credentials — those ride NodeTransport, not SSH, so skip them here.
+_net_ok = bool(_dev_rec.get("host")) and _dev_rec.get("port") is not None \
+    and probe_tcp(_dev_rec["host"], int(_dev_rec["port"]))
 pytestmark = pytest.mark.skipif(
-    not (_have_device and _net_ok and bool(reg.require(DEVICE_ID))),
-    reason="device unreachable")
+    not (_have_device and _net_ok and bool(password_of(_dev_rec))),
+    reason="device unreachable or credentials missing")
 
 
 @pytest.fixture(scope="module")
@@ -196,12 +199,17 @@ def test_ru5_dispatch_without_protocol_field(orch):
 
 # --- RU6: rao run CLI 一条命令派发 -------------------------------------------
 def test_ru6_rao_run_cli(orch):
+    import shutil
     import subprocess
-    exe = os.path.join(ROOT, ".venv", "Scripts", "rao.exe")
-    if not os.path.isfile(exe):
-        exe = os.path.join(ROOT, ".venv", "Scripts", "rao")
-    r = subprocess.run([exe, "run", "--device", DEVICE_ID,
-                        "echo rao-run-cli-ok"],
+    # Console scripts land in Scripts/ on Windows, bin/ on POSIX. Prefer the
+    # installed entry point; fall back to `python -m rao.cli`.
+    exe = shutil.which("rao")
+    if exe:
+        argv = [exe]
+    else:
+        argv = [sys.executable, "-m", "rao.cli"]
+    r = subprocess.run(argv + ["run", "--device", DEVICE_ID,
+                               "echo rao-run-cli-ok"],
                        capture_output=True, timeout=120)
     out = r.stdout.decode("utf-8", "replace")
     assert r.returncode == 0, out + r.stderr.decode("utf-8", "replace")

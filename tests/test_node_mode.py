@@ -23,19 +23,31 @@ from rao.transport import NodeTransport  # noqa: E402
 
 
 @pytest.fixture()
-def node_env(tmp_path):
+def node_env(tmp_path, monkeypatch):
+    """Redirect all rao state into tmp_path.
+
+    master-token / nodes.json / daemon.json resolve via $RAO_STATE_DIR (falling
+    back to $HOME/.rao), so without this the master would enrol nodes into the
+    developer's real ~/.rao and leave a stray node-registered device behind.
+    """
     home = tmp_path / "node-home"
     home.mkdir()
+    state = tmp_path / "state"
+    state.mkdir()
+    monkeypatch.setenv("RAO_STATE_DIR", str(state))
     return home
 
 
-def _spawn_node(home, master_port, token):
+def _spawn_node(home, master_port, token, state_dir=None):
     logf = open(os.path.join(str(home), "nodelog.txt"), "wb")
+    env = dict(os.environ)
+    if state_dir:
+        env["RAO_STATE_DIR"] = str(state_dir)
     proc = subprocess.Popen(
         [PY, os.path.join(RUNTIME, "rda_daemon.py"), "serve",
          "--port", "0", "--master", "127.0.0.1:%d" % master_port,
          "--token", token],
-        stdout=logf, stderr=logf, stdin=subprocess.DEVNULL)
+        stdout=logf, stderr=logf, stdin=subprocess.DEVNULL, env=env)
     return proc
 
 
@@ -46,7 +58,8 @@ def test_node_mode_registration_and_goal(tmp_path, node_env):
     try:
         # 等主控监听就绪
         time.sleep(0.3)
-        proc = _spawn_node(node_env, master._server.server_address[1], token)
+        proc = _spawn_node(node_env, master._server.server_address[1], token,
+                           state_dir=os.environ.get("RAO_STATE_DIR"))
         # 等节点注册
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
@@ -103,10 +116,11 @@ def test_node_mode_registration_and_goal(tmp_path, node_env):
         pass
 
 
-def test_node_registration_bad_token(tmp_path):
+def test_node_registration_bad_token(tmp_path, node_env):
     master = start_master_thread(port=0, registry=None)
     bad_token = "wrong-token"
-    proc = _spawn_node(tmp_path, master._server.server_address[1], bad_token)
+    proc = _spawn_node(tmp_path, master._server.server_address[1], bad_token,
+                       state_dir=os.environ.get("RAO_STATE_DIR"))
     time.sleep(1.5)
     assert master.registered_devices() == []   # 令牌错误 → 拒绝
     proc.terminate()

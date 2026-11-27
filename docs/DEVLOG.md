@@ -211,3 +211,25 @@
 ### 新增文档
 - docs/DEPLOYMENT.md：从零部署到真机跑通（控制机/设备准备、SSH 与节点双模式、
   Agent 注入、远端 Claude 安装与 API 模式、验收清单、排障、卸载回滚、端口目录速查）。
+
+## 2026-11-27（续）：社区补丁评审与 v0.11.1
+
+收到外部补丁（6 项），逐条核验**全部属实**并合入；评审中另发现 1 处同类遗漏，
+一并修复。
+
+| # | 级别 | 问题 | 核验/处理 |
+|---|---|---|---|
+| 1 | P0 | devices.py `DEFAULT_CONFIG_PATHS[1]` 在全新克隆（列表仅 1 项）下 IndexError，CLI/MCP 全部入口崩溃 | 属实（v0.8 收窄列表后未同步兜底）；改为 `[0]`，全新克隆实测正常 |
+| 2 | P1 | test_v06「claude 缺失」用例在装有 claude 的机器稳定失败 | 属实：RdaProc 是子进程，`monkeypatch.setattr(shutil.which)` 无法生效；且 v0.10 回退探测会命中本机二进制。改为子进程清空 PATH + 回退二进制存在时 skip |
+| 3 | P1 | test_node_mode 把节点注册进真实 `~/.rao`，留下假设备 | 属实（实测 `~/.rao/nodes.json` 残留 `mo`）；fixture 注入 `RAO_STATE_DIR`，子进程显式传递 |
+| 4 | P1 | rda_daemon 的 `RAO_DIR` 硬编码 `~/.rao`，无视 `RAO_STATE_DIR`（与 master/devices 不一致） | 属实；改为 `RAO_STATE_DIR or ~/.rao` |
+| 5 | P2 | test_mcp_server 在节点设备（port=None）上 `int(None)` 崩溃，收集中断 | 属实（node 设备 port 确为 None）；显式判空 |
+| 6 | P2 | test_real_usage 同上；缺凭据门禁；RU6 硬编码 Windows 路径 | 属实；判空 + 凭据门禁 + `shutil.which("rao")`/`-m rao.cli` 跨平台 |
+
+**评审补充修复（补丁未覆盖）**：`test_mcp_server._params()` 把子进程 env 过滤成仅
+`RAO_*`（丢失 PATH/HOME），导致子进程把 `master-token` 写进真实 `~/.rao`，且
+跨平台不可移植。改为继承完整 env + 注入临时 `RAO_STATE_DIR`；实测测试后 `~/.rao`
+保持干净（仅保留真实注入产物 backups/manifest.json）。
+
+清理：删除此前测试污染残留（`~/.rao/{nodes.json,master-token,daemon.json,goals/}`）。
+验证：90/90 全绿（含真机 T1–T21 / TC-A~D / RU1–R6）。
