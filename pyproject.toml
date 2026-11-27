@@ -4,7 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rao"
-version = "0.5.0"
+# 单一版本来源：src/rao/__init__.py 的 __version__（避免多处漂移）
+dynamic = ["version"]
 description = "Remote Agent Orchestrator - dispatch goals to semi-autonomous agents on remote devices (MCP server for ZCode/Claude/Codex)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -25,6 +26,9 @@ rao = "rao.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "rao.__version__" }
 
 [tool.setuptools.package-data]
 rao = [

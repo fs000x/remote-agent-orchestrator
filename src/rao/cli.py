@@ -191,7 +191,9 @@ def cmd_mcp(args):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="rao",
                                  description="Remote Agent Orchestrator")
-    ap.add_argument("--version", action="version", version="rao 0.5.0")
+    from . import __version__
+    ap.add_argument("--version", action="version",
+                    version="rao %s" % __version__)
     sub = ap.add_subparsers(dest="cmd")
 
     p_setup = sub.add_parser("setup", help="检测 Agent 并注入 MCP+Skill")

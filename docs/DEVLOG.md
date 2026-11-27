@@ -189,3 +189,25 @@
   真机 artifact 断言）/ TC-C 运行中取消 / TC-D constraints 透传
 - T21 改造：回退探测命中包内二进制后，需同时移走链接与包内二进制才能模拟"无 claude"
 - 90 测试全绿；tag v0.10.0 推送 GitHub
+
+## 2026-11-27：v0.11.0 发布收尾
+
+### 版本号收敛（修复漂移）
+- 现状问题：pyproject=0.5.0、cli --version=0.5.0、__init__=0.1.0、master 协议
+  masterVersion=0.10.0、dist/ 仅 0.5.0 产物 —— 五处不一致。
+- 修复：`src/rao/__init__.py::__version__ = "0.11.0"` 为唯一来源；
+  pyproject 改 `dynamic = ["version"]` + `[tool.setuptools.dynamic] attr = rao.__version__`；
+  CLI 与 master 协议均读取它。今后只改一处。
+
+### README 与真实布局对齐
+- 修正：rda/、skills/ 顶层目录（v0.5 已并入 src/rao/runtime、src/rao/data/skills）；
+  工具数 6 → 9（含 DAG/报告）；用例 39 → 90；移除重复的旧"快速开始"与
+  过期的环境变量说明；补充传输模式（ssh/node）与凭据链。
+
+### 节点模式并入确认
+- feature/v0.10-node-mode 与 main 同点（c10c9cb），已完全合并（含 MIT LICENSE 与
+  个人路径/IP 脱敏提交）；无待合并提交。
+
+### 新增文档
+- docs/DEPLOYMENT.md：从零部署到真机跑通（控制机/设备准备、SSH 与节点双模式、
+  Agent 注入、远端 Claude 安装与 API 模式、验收清单、排障、卸载回滚、端口目录速查）。

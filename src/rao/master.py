@@ -328,8 +328,9 @@ class MasterServer:
                         "peer": self.client_address[0],
                     }
                 self._node_id = node_id
+                from . import __version__ as _rv
                 self._send({"type": "registered", "nodeId": node_id,
-                            "masterVersion": "0.10.0"})
+                            "masterVersion": _rv})
                 self.server.daemon.persist_nodes()
                 try:
                     if self.server.daemon.registry is not None:
