@@ -1,28 +1,33 @@
 # rao 交接文档（HANDOVER）
 
-> 更新: 2026-11-21（v0.7.0 发布就绪态）
+> 更新: 2026-11-27（v0.11.0 发布态）
 
 ## 1. 当前状态
 
-**产品化三阶段（v0.5/v0.6/v0.7）全部实现并验证。** 86 个测试全绿；
-真机验收 T1–T21（含断线重接、自动补部署、claude backend 快速失败）。
-main 上 tag 链：v0.1.0 → v0.5.0 → v0.6.0 → v0.7.0（各迭代独立分支合并）。
+**v0.1–v0.11 全部实现并验证。** 90 个测试全绿（单元/本地协议/daemon/节点模式/
+真机 T1–T21/TC-A~D/RU1–R6/MCP stdio）。真机 Claude 端到端已验证。
+main tag 链：v0.1.0 → … → v0.10.0 → **v0.11.0**（各迭代独立分支合并）。
+
+v0.11 变更：版本号收敛为单一来源（`src/rao/__init__.py`，`pyproject` 动态读取，
+CLI/master 同源）、README 与真实布局对齐、新增 `docs/DEPLOYMENT.md` 部署手册、
+节点模式（master 内嵌 `rao mcp`，设备 `--master` 拨入）并入主线。
 
 | 交付物 | 位置 | 状态 |
 |---|---|---|
+| 部署手册（从零到真机） | docs/DEPLOYMENT.md | ✅ |
 | 产品方案 | docs/PRODUCT.md | ✅ 决策/边界/命名规则 |
 | 技术架构 | docs/DESIGN.md | ✅ + roadmap 打勾状态 |
-| rao CLI（setup/devices/doctor/uninstall/mcp） | src/rao/cli.py + agents.py | ✅ 真机注入/回滚演练过 |
-| MCP server（6 工具 + DAG/报告） | src/rao/server.py + orchestrator.py | ✅ |
-| 远端 Agent Server（rda-node） | src/rao/runtime/（rda.py/rda_daemon.py） | ✅ executor + claude 双 backend |
-| ZCode 设备/凭据复用 | （已按产品决策移除 2026-11-21） | 设备仅由用户配置 |
-| 打包 | pyproject.toml + dist/ + plugin/ | ✅ twine PASSED |
+| 节点模式协议 | docs/PROTOCOL-NODE.md + src/rao/master.py | ✅ 本地回环测试 |
+| rao CLI（setup/devices/doctor/run/uninstall/mcp） | src/rao/cli.py + agents.py | ✅ 真机注入/回滚演练过 |
+| MCP server（9 工具 + DAG/报告） | src/rao/server.py + orchestrator.py | ✅ |
+| 远端运行时 | src/rao/runtime/（rda.py/rda_daemon.py） | ✅ executor + claude 双 backend |
+| 打包 | pyproject.toml + dist/ + plugin/ + LICENSE(MIT) | ✅ twine PASSED |
 
 ## 2. 怎么跑
 
 ```bash
 cd remote-agent-orchestrator
-./.venv/Scripts/python.exe -m pytest tests/ -q      # 86 测试
+./.venv/Scripts/python.exe -m pytest tests/ -q      # 90 测试
 ./.venv/Scripts/rao.exe doctor                      # 诊断
 ./.venv/Scripts/rao.exe setup --agents zcode,claude --yes
 ```
