@@ -11,6 +11,7 @@
  */
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -170,7 +171,11 @@ export class RunStore {
 
   async saveReport(report: Record<string, unknown>): Promise<string> {
     await mkdir(this.dir, { recursive: true });
-    const path = join(this.dir, `report-${Date.now()}.json`);
+    // collision-safe name: two saves may land in the same millisecond
+    let path = join(this.dir, `report-${Date.now()}.json`);
+    for (let n = 1; existsSync(path); n++) {
+      path = join(this.dir, `report-${Date.now()}-${n}.json`);
+    }
     const tmp = `${path}.tmp`;
     await writeFile(tmp, JSON.stringify(report, null, 1), "utf8");
     await rename(tmp, path);
