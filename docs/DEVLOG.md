@@ -233,3 +233,26 @@
 
 清理：删除此前测试污染残留（`~/.rao/{nodes.json,master-token,daemon.json,goals/}`）。
 验证：90/90 全绿（含真机 T1–T21 / TC-A~D / RU1–R6）。
+
+
+## v1.0.0 (2026-11-29) — Node.js/TypeScript 重写 + P1/P2/P3 借鉴落地
+
+- **全量重写**：src/rao（Python）→ src/*.ts（TS，ES2022/NodeNext strict）+
+  零依赖运行时 `src/runtime/*.mjs`（Node >= 18）。Python 归档于
+  legacy/python-v0.11.1。
+- 移植并真机复验：orchestrator（粘性终态/预算 fail-closed/槽位/重连 seq 去重）、
+  daemon（bridge/节点拨出/inject-one 控制面/配对）、MCP 9 工具、DAG、
+  报告 diff、CLI（setup/devices/doctor/run/pair/uninstall/mcp）。
+- P1 borrow：operationId 幂等账本（变更型工具强制）+ 稳定错误码表 + LIMITS。
+- P2 borrow：Noise_IK_25519_ChaChaPoly_SHA256（prologue 绑定 nodeId、重放/
+  篡改 fail-closed；主控与设备共用 canonical noise.mjs）、盲转发 relay
+  （join 后零解析）、设备配对 v1（一次性码 + 密钥持有登记）。
+- P3 borrow：AGENTS.md 仓库不变量 + docs/TEST-POLICY.md 测试政策。
+- 字段 bug 修复（真机 T 系列发现）：
+  - client-bridge/master 链路 connect({timeout}) 安装空闲超时 → 安静阶段
+    （wait_file）桥被杀、事件断流；改为一次性 connect guard（Python
+    settimeout(None) 对齐）。
+  - claude backend spawn 参数重复 argv[0] → CLI 把二进制路径当 prompt；
+    修复后 HOSTNAME=diablo-pc 闭环验证通过。
+- 测试：137 个用例（vitest，L1-L5 无外部网络）+ 真机 T1-T6
+  （scripts/device-verify.mjs，diablo-100 全绿）。

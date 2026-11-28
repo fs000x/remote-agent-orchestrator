@@ -1,5 +1,12 @@
 # Remote Agent Orchestrator (RAO) 设计文档
 
+> **v1.0.0：本仓库已完成 Node.js/TypeScript 重写**（架构语义与本文一致；
+> 实现映射：src/rao/* → src/*.ts + src/mcp/ + src/transports/ + src/master.ts；
+> 远端运行时从 Python stdlib 三件套改为 `rda.mjs`/`protocol.mjs`/
+> `rda_daemon.mjs`/`noise.mjs`（Node >= 18，零依赖）。新增能力见 README
+> 「传输与安全」一节：operationId 账本 / Noise_IK / 盲转发 relay / 设备配对。
+> Python 实现归档于 legacy/python-v0.11.1。
+
 - 版本: v1.0
 - 日期: 2026-11-19
 - 状态: 已定稿，进入实现

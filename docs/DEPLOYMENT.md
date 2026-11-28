@@ -1,9 +1,11 @@
-# rao 部署手册：从零到真机跑通
+# rao 部署手册：从零到真机跑通（Node.js 版）
 
-> 适用版本：rao 0.11.0 · 远端支持 Linux / macOS · 控制机支持 Windows / macOS / Linux
-> 目标：一台控制机（装 Agent 宿主），一台或多台远程设备，跑通「派发 goal → 远端执行 → 结果回收」。
-
----
+> **v1.0.0 起本仓库为 Node.js/TypeScript 重写版**。控制机安装从 pipx 改为
+> npm；**远程设备运行时改为 `rda.mjs`/`protocol.mjs`/`rda_daemon.mjs`/
+> `noise.mjs`（Node >= 18，零依赖，provision 自动上传）**——设备不再需要
+> Python。Python 版归档于 `legacy/python-v0.11.1`。
+> 仓库不变量见 [../AGENTS.md](../AGENTS.md)，测试政策见
+> [TEST-POLICY.md](TEST-POLICY.md)。
 
 ## 0. 概念与拓扑
 
@@ -26,7 +28,7 @@
 
 ## 1. 控制机准备
 
-### 1.1 依赖
+### 1.1 依赖（控制机）
 
 - Python **3.10+**
 - 想接入的 Agent 宿主：ZCode 桌面端，或 Claude Code
@@ -36,15 +38,14 @@
 
 ```bash
 # 方式 A：发行包（推荐给最终用户）
-pipx install rao
+npm install -g rao
 
 # 方式 B：源码开发态
 git clone <repo> && cd remote-agent-orchestrator
-python -m venv .venv
-./.venv/Scripts/python.exe -m pip install -e ".[dev]"      # Windows
-# ./.venv/bin/python -m pip install -e ".[dev]"             # macOS/Linux
+npm install
+npm run build
+npm link          # 全局 rao / rao-relay 命令
 ```
-
 验证：
 
 ```bash
@@ -56,19 +57,19 @@ rao --version        # 应输出 rao 0.11.0
 
 ---
 
-## 2. 远程设备准备
+## 2. 远程设备准备（需要 Node >= 18）
 
 在每台设备上确认：
 
 ```bash
-python3 --version    # 需 ≥ 3.8（daemon/rda 为 stdlib-only，无需 pip 安装任何东西）
+node --version    # 需 ≥ 3.8（daemon/rda 为 stdlib-only，无需 pip 安装任何东西）
 uname -sm            # Linux/macOS
 whoami; hostname     # 记下用户名与主机名（节点模式下主机名 = 节点 id）
 ```
 
 可选（只有想用「agent 模式」时才需要）：`gcc/make` 等常规工具链。
 
-**不需要预装任何东西**：rao 会在首次派发前自动把运行时（rda.py / rda_daemon.py /
+**不需要预装任何东西**：rao 会在首次派发前自动把运行时（rda.py / rda_daemon.mjs /
 protocol.py）经 SFTP 上传到设备的 `rdaDir`（默认 `$HOME/.rao/runtime`）。
 
 ---
@@ -297,17 +298,18 @@ cat ~/.rao/master-token
 先把运行时放上设备（任一方式）：
 
 ```bash
-# A. 从控制机推送（一次性）
-python scripts/deploy_rda.py dev-a      # 需设备已在 devices.json
-# B. 或把 src/rao/runtime/ 三个文件拷到设备 ~/.rao/runtime/
+# A. 从控制机推送（一次性，需设备已在 devices.json）：直接派发任意 goal，
+#    provision 会自动上传 src/runtime/*.mjs
+# B. 或手工拷贝 src/runtime/ 的四个文件（rda.mjs / protocol.mjs /
+#    rda_daemon.mjs / noise.mjs）到设备 ~/.rao/runtime/
 ```
 
 在设备上启动节点（拨出）：
 
 ```bash
 cd ~/.rao/runtime
-python3 rda_daemon.py start --master <控制机IP>:9700 --token <注册令牌>
-python3 rda_daemon.py ping
+node rda_daemon.mjs start --master <控制机IP>:9700 --token <注册令牌>
+node rda_daemon.mjs ping
 ```
 
 ### 7.3 验证
@@ -315,6 +317,41 @@ python3 rda_daemon.py ping
 - 主控侧日志出现 `registered with master ...`；`~/.rao/nodes.json` 出现节点记录
 - `rao devices list` 中自动出现该设备（`source=node`，id = 设备主机名）
 - 直接派发：`rao run --device <主机名> "hostname"`
+
+### 7.4 配对 + 端到端加密（Noise_IK，推荐）
+
+明文注册令牌只防"陌生人注册"，不加密链路。跨公网部署请先配对：
+
+```bash
+# 控制机（master 监听已随 rao mcp 运行）：
+rao pair --node <设备主机名>          # 打印一次性 6 位配对码（5 分钟有效）
+
+# 设备：
+node rda_daemon.mjs pair --master <控制机IP>:9700     --node-id <设备主机名> --code <配对码>
+# 生成/复用设备端 Noise 静态密钥 -> ~/.rao/node-key.json
+# （登记的是设备本地生成的公钥；服务端只做密钥持有登记）
+
+# 重启节点（serve 自动读取 node-key.json，走 Noise_IK 加密链路）：
+node rda_daemon.mjs stop
+node rda_daemon.mjs start --master <控制机IP>:9700
+```
+
+安全语义（normative）：
+
+- 配对码一次性、绑定 nodeId、5 分钟过期；旧密钥配对轮换后立即失效。
+- Noise_IK 握手 prologue 绑定 nodeId；initiator 静态身份必须与登记公钥一致；
+  握手重放（同 ephemeral 复用）与数据帧重放/篡改一律断链（fail-closed）。
+
+### 7.5 盲转发 relay（双方都无法被直连时）
+
+```bash
+# 公网机器：
+rao-relay --port 9900          # join 后字节原样转发，永不解密
+# 主控与设备各自把拨出目标指向 relay 的 linkId（部署层面约定）
+```
+
+中继只解析每连接第一行 join JSON；其后所有字节（含 Noise 握手与密文帧）
+在两端之间原样转发——中继运营者看不到任何明文。
 
 > 节点模式下 `devices.json` 仍可对该设备做策略覆盖（workspace / 并发上限），
 > 手工条目优先于注册信息。
@@ -344,8 +381,8 @@ rao 在每次派发前会**确保只有一个 daemon 实例**（先停掉全部 
 若手工操作导致多实例：
 
 ```bash
-pkill -f 'rda_daemon.py serve'
-python3 ~/.rao/runtime/rda_daemon.py start
+pkill -f 'rda_daemon.mjs serve'
+node ~/.rao/runtime/rda_daemon.mjs start
 ```
 
 ### 9.2 `claude CLI not found`
@@ -369,7 +406,7 @@ daemon 常驻会保留旧内存代码。rao 通过 `codeHash`（三文件联合�
 手工触发：
 
 ```bash
-cd ~/.rao/runtime && python3 rda_daemon.py stop && python3 rda_daemon.py start
+cd ~/.rao/runtime && node rda_daemon.mjs stop && node rda_daemon.mjs start
 ```
 
 ### 9.4 会话里看不到 MCP 工具
@@ -408,7 +445,7 @@ cd ~/.rao/runtime && python3 rda_daemon.py stop && python3 rda_daemon.py start
 rao uninstall --agents zcode,claude
 
 # 远端停止 daemon（可选）
-ssh user@device "pkill -f 'rda_daemon.py serve'"
+ssh user@device "pkill -f 'rda_daemon.mjs serve'"
 
 # 远端删除运行时（可选）
 ssh user@device "rm -rf ~/.rao/runtime"
