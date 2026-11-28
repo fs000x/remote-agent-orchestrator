@@ -93,8 +93,8 @@ export interface Transport {
   provision?(device: DeviceRecord): Promise<unknown>;
   /** control-plane steer/cancel on a fresh connection (immune to bridge state) */
   steer?(device: DeviceRecord, goalId: string, payload: Record<string, unknown>): Promise<boolean>;
-  /** authoritative event buffer (mirror reconcile at finalize) */
-  goalEvents?(device: DeviceRecord, goalId: string): Promise<RaoEvent[]>;
+  /** authoritative event buffer (mirror reconcile at finalize); null = unknown */
+  goalEvents?(device: DeviceRecord, goalId: string): Promise<RaoEvent[] | null>;
 }
 
 /* ------------------------------------------------------------------ *
@@ -511,7 +511,7 @@ export class GoalRun {
           this.device,
           this.goalId,
         );
-        if (evs.length > this.chan.events.length) {
+        if (evs && evs.length > this.chan.events.length) {
           this.chan.events = evs;
           this.chan.event_seqs = evs.map((_, i) => i + 1);
         }

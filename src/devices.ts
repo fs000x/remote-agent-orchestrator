@@ -17,6 +17,8 @@ export interface DeviceRecord {
   id: string;
   host?: string;
   port?: number | null;
+  /** daemon-mode: on-device loopback port (SSH transport reads it via daemon.json) */
+  daemonPort?: number;
   user?: string;
   workspace?: string;
   rdaDir?: string;
