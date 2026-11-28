@@ -151,6 +151,9 @@ export class GoalEngine {
     this.totalRetries = 0;
     this.finalStatus = null;
     this.startedMs = nowMs();
+    // engine-local cwd (Python used os.chdir, which is process-global and
+    // races across concurrent goals hosted by the daemon)
+    this.cwd = null;
   }
 
   /** programmatic injection feed (daemon mode / tests) */
@@ -244,14 +247,14 @@ export class GoalEngine {
     if ("stdoutContains" in crit && !(res.stdout || "").includes(crit.stdoutContains)) return false;
     if ("stderrContains" in crit && !(res.stderr || "").includes(crit.stderrContains)) return false;
     if ("fileExists" in crit) {
-      const base = step.cwd || process.cwd();
+      const base = step.cwd || this.cwd || process.cwd();
       if (!existsSync(join(base, crit.fileExists))) return false;
     }
     return true;
   }
 
   collectArtifacts(step, res, attemptData) {
-    const base = step.cwd || process.cwd();
+    const base = step.cwd || this.cwd || process.cwd();
     for (const rel of step.artifacts ?? []) {
       const p = join(base, rel);
       try {
@@ -711,7 +714,7 @@ export class GoalEngine {
     try {
       const ws = this.goal.workspace;
       if (ws && existsSync(ws)) {
-        try { process.chdir(ws); } catch { /* keep cwd */ }
+        this.cwd = ws;
       }
       const osMod = await import("node:os");
       this.emit(KIND_STARTED, {
@@ -867,6 +870,7 @@ export async function main(argv = process.argv.slice(2)) {
     return 2;
   }
   const { rl, line } = await readFirstLine(process.stdin);
+  rl.on("error", () => { /* stdin error: goal loop ends via exit codes */ });
   const raw = (line || "").trim();
   if (!raw) {
     process.stderr.write("no goal received on stdin\n");
