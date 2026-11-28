@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { sshExec, sftpPutFiles, connectClient, execOn } from "./transports/ssh2util.js";
 import type { DeviceRecord } from "./devices.js";
 
-export const RDA_FILES = ["rda.mjs", "protocol.mjs", "rda_daemon.mjs"] as const;
+export const RDA_FILES = ["rda.mjs", "protocol.mjs", "rda_daemon.mjs", "noise.mjs"] as const;
 
 export function runtimeDir(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "runtime");

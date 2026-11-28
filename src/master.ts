@@ -23,6 +23,10 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { RAO_VERSION } from "./version.js";
+// @ts-ignore — canonical runtime implementation is plain .mjs (zero-dep)
+import {
+  NoiseError, noiseResponderHandshake, noiseSplit,
+} from "./runtime/noise.mjs";
 import type { DeviceRecord } from "./devices.js";
 import type { DispatchedGoal } from "./protocol.js";
 import type { GoalChannel, Transport } from "./orchestrator.js";
@@ -59,9 +63,20 @@ interface NodeEntry {
   lastSeen: number;
   sock: import("node:net").Socket | null;
   peer: string;
+  /** Noise_IK session when the node registered via the secure path */
+  session: NoiseSession | null;
 }
 
 type WrappedMsg = Record<string, unknown> & { goalId?: string };
+
+/** raw x25519 keypair (32-byte buffers) — matches src/runtime/noise.mjs */
+export interface KeyPairRaw { priv: Buffer; pub: Buffer }
+
+/** session shape returned by src/runtime/noise.mjs noiseSplit() */
+interface NoiseSession {
+  send(plaintext: unknown): Record<string, unknown>;
+  recv(frame: Record<string, unknown>): Buffer;
+}
 
 export class NodeGoalChannel implements GoalChannel {
   readonly goalId: string;
@@ -184,10 +199,23 @@ export class MasterServer {
   private readonly goalChannels = new Map<string, NodeGoalChannel>();
   private server: Server | null = null;
   private readonly registry: { reload(): Promise<void> } | null;
+  /** E2EE (Noise_IK): master static keypair + enrolled node static pubs */
+  readonly noiseStatic: KeyPairRaw | null;
+  readonly noiseNodeKeys: Map<string, Buffer>;
+  /** handshake-replay guard (per process) */
+  readonly seenEphemerals = new Set<string>();
 
-  constructor(opts: { port?: number; registry?: { reload(): Promise<void> } } = {}) {
+  constructor(opts: {
+    port?: number;
+    registry?: { reload(): Promise<void> };
+    /** enable Noise_IK for nodes enrolled in noiseNodeKeys */
+    noiseStatic?: KeyPairRaw;
+    noiseNodeKeys?: Map<string, Buffer>;
+  } = {}) {
     this.port = opts.port ?? 0;
     this.registry = opts.registry ?? null;
+    this.noiseStatic = opts.noiseStatic ?? null;
+    this.noiseNodeKeys = opts.noiseNodeKeys ?? new Map();
     this.enrollmentToken = ensureMasterToken();
   }
 
@@ -197,6 +225,10 @@ export class MasterServer {
     const node = this.nodes.get(nodeId);
     if (!node || node.sock === null) {
       throw new Error(`node ${nodeId} not connected`);
+    }
+    if (node.session) {
+      node.sock.write(JSON.stringify(node.session.send(obj)) + "\n");
+      return;
     }
     node.sock.write(JSON.stringify(obj) + "\n");
   }
@@ -334,10 +366,36 @@ export class MasterServer {
     const rl = createInterface({ input: sock, terminal: false });
     rl.on("error", () => { /* socket error handled below */ });
     let nodeId: string | null = null;
+    let session: NoiseSession | null = null;
     const peer = sock.remoteAddress ?? "?";
+    const writeLine = (obj: Record<string, unknown>): void => {
+      // all master->node traffic goes through the session when E2EE is on
+      if (session) {
+        sock.write(JSON.stringify(session.send(obj)) + "\n");
+      } else {
+        sock.write(JSON.stringify(obj) + "\n");
+      }
+    };
     rl.on("line", (raw) => {
       const line = raw.trim();
       if (!line) return;
+      if (session && nodeId !== null) {
+        // encrypted data frame → unwrap, then route
+        let frame: Record<string, unknown>;
+        try { frame = JSON.parse(line); } catch { return; }
+        let msg: WrappedMsg;
+        try {
+          msg = JSON.parse(session.recv(frame).toString("utf8")) as WrappedMsg;
+        } catch {
+          // replay/tamper: fail-closed — drop the link
+          sock.destroy();
+          return;
+        }
+        this.routeInbound(msg);
+        const node = this.nodes.get(nodeId);
+        if (node) node.lastSeen = Date.now();
+        return;
+      }
       let msg: WrappedMsg;
       try { msg = JSON.parse(line); } catch { return; }
       if (nodeId === null) {
@@ -355,6 +413,64 @@ export class MasterServer {
           sock.destroy();
           return;
         }
+        // optional E2EE upgrade (Noise_IK): the node initiates with ik1;
+        // prologue binds the nodeId so a captured handshake cannot be
+        // replayed onto another identity's link
+        if (msg.sec === "noise-ik-v1") {
+          const nodeStaticPub = this.noiseNodeKeys?.get(nid);
+          if (!nodeStaticPub || !this.noiseStatic) {
+            sock.write(JSON.stringify({
+              type: "error", message: "noise not enrolled for this node",
+            }) + "\n");
+            sock.destroy();
+            return;
+          }
+          try {
+            const res = noiseResponderHandshake(
+              this.noiseStatic,
+              `rao-node-link|v1|${nid}`,
+              msg as unknown as Record<string, unknown>,
+              this.seenEphemerals,
+              Buffer.from(JSON.stringify({
+                registered: true, masterVersion: RAO_VERSION,
+              })),
+            );
+            // capabilities arrive ENCRYPTED (res.payload) — msg.pl is ciphertext
+            const capabilities = JSON.parse(res.payload.toString("utf8"));
+            // identity binding: fail-closed unless the initiator static
+            // matches the enrolled node key
+            if (!res.initiatorStaticPub.equals(nodeStaticPub)) {
+              throw new NoiseError("initiator identity mismatch");
+            }
+            session = noiseSplit(res.hs, false);
+            const reply = res.reply as Record<string, unknown>;
+            reply.type = "registered";
+            reply.nodeId = nid;
+            sock.write(JSON.stringify(reply) + "\n");
+            const prev = this.nodes.get(nid);
+            if (prev && prev.sock !== null) {
+              try { prev.sock.destroy(); } catch { /* stale */ }
+            }
+            this.nodes.set(nid, {
+              info: capabilities as Record<string, unknown>,
+              lastSeen: Date.now(),
+              sock,
+              peer,
+              session,
+            });
+            nodeId = nid;
+            this.persistNodes();
+            void this.registry?.reload().catch(() => { /* registry optional */ });
+            return;
+          } catch (err) {
+            sock.write(JSON.stringify({
+              type: "error",
+              message: `noise handshake failed: ${String((err as Error)?.message ?? err)}`,
+            }) + "\n");
+            sock.destroy();
+            return;
+          }
+        }
         const prev = this.nodes.get(nid);
         if (prev && prev.sock !== null) {
           try { prev.sock.destroy(); } catch { /* stale */ }
@@ -364,6 +480,7 @@ export class MasterServer {
           lastSeen: Date.now(),
           sock,
           peer,
+          session: null,
         });
         nodeId = nid;
         sock.write(JSON.stringify({

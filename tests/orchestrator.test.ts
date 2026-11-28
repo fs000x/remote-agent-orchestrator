@@ -167,6 +167,12 @@ class FakeTransport implements Transport {
     payload: Record<string, unknown>,
   ): Promise<boolean> {
     this.steers.push({ goalId, payload });
+    // realistic: a delivered cancel makes the device-side engine exit,
+    // which EOFs the bridge and resolves waitExit promptly
+    if (payload.type === "cancel") {
+      const c = this.channels.get(goalId);
+      if (c) c.exit_code = c.exit_code ?? 137;
+    }
     return true;
   }
 }
@@ -234,7 +240,7 @@ beforeEach(async () => {
 afterEach(async () => {
   delete process.env.RAO_STATE_DIR;
   delete process.env.RAO_MERGE_NODES;
-  await rm(dir, { recursive: true, force: true });
+  await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 async function mkOrch(opts: {

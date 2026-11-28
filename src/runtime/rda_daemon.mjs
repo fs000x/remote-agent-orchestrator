@@ -46,6 +46,7 @@ import {
   KIND_ERROR, makeEvent, newGoalId, nowMs, validateGoal,
 } from "./protocol.mjs";
 import { GoalEngine } from "./rda.mjs";
+import { initiatorHandshake } from "./noise.mjs";
 
 export const DAEMON_VERSION = "0.3.0";
 const HEARTBEAT_MS = 5000;
@@ -344,7 +345,7 @@ function serveState(state, port) {
 /* ------------------------------------------------------------------ *
  * v0.10 node mode: outbound link to the rao master
  * ------------------------------------------------------------------ */
-async function masterLinkLoop(state, host, mport, enrollToken, nodeId) {
+async function masterLinkLoop(state, host, mport, enrollToken, nodeId, noiseKey = null) {
   let backoff = 500;
   for (;;) {
     try {
@@ -357,7 +358,13 @@ async function masterLinkLoop(state, host, mport, enrollToken, nodeId) {
           sock.setNoDelay?.(true);
         });
         const connectGuard = setTimeout(() => fail("connect timeout"), 10000);
-        const send = makeSend(sock);
+        const rawSend = makeSend(sock);
+        // session-aware send: wraps when the Noise_IK session is up
+        let session = null;
+        let pendingHandshake = null;
+        const send = (obj) => {
+          rawSend(session ? session.send(obj) : obj);
+        };
         let authed = false;
         const rl = createInterface({ input: sock, terminal: false });
         rl.on("error", () => { /* socket error already handled on sock */ });
@@ -380,9 +387,38 @@ async function masterLinkLoop(state, host, mport, enrollToken, nodeId) {
         rl.on("line", (raw) => {
           const line = raw.trim();
           if (!line) return;
+          if (pendingHandshake) {
+            // ik2 from the master completes the Noise_IK handshake
+            let reply;
+            try { reply = JSON.parse(line); } catch { return; }
+            try {
+              const res = pendingHandshake.finish(reply);
+              session = res.session;
+              pendingHandshake = null;
+              log(`registered with master ${host}:${mport} (noise-ik-v1)`);
+            } catch (err) {
+              log(`noise handshake failed: ${err.message}`);
+              fail("noise handshake failed");
+              return;
+            }
+            backoff = 500;
+            for (const rec of state.goals.values()) {
+              if (rec.status === "running") rec.subscribers.push(send);
+            }
+            return;
+          }
           let msg;
           try { msg = JSON.parse(line); } catch { return; }
-          if (!authed) {
+          if (session) {
+            // encrypted data frame → unwrap
+            try {
+              msg = JSON.parse(session.recv(msg).toString("utf8"));
+            } catch {
+              // replay/tamper: fail-closed
+              fail("noise frame rejected");
+              return;
+            }
+          } else if (!authed) {
             if (msg.type !== "registered") {
               log(`register rejected: ${JSON.stringify(msg)}`);
               fail("register rejected");
@@ -438,16 +474,30 @@ async function masterLinkLoop(state, host, mport, enrollToken, nodeId) {
             try { send({ type: "error", message: String(err?.message ?? err) }); } catch { /* link dead */ }
           }
         });
-        // outbound: register first thing
+        // outbound: register first thing (Noise_IK when a node key exists)
         const caps = {
           os: platform(),
           node: process.version,
           user: process.env.USER || process.env.USERNAME ||
             (() => { try { return userInfo().username; } catch { return "?"; } })(),
         };
-        send({
-          cmd: "register", nodeId, token: enrollToken, capabilities: caps,
-        });
+        if (noiseKey) {
+          const init = initiatorHandshake(
+            { priv: Buffer.from(noiseKey.priv, "base64"), pub: Buffer.from(noiseKey.pub, "base64") },
+            Buffer.from(noiseKey.masterPub, "base64"),
+            `rao-node-link|v1|${nodeId}`,
+            Buffer.from(JSON.stringify(caps), "utf8"),
+          );
+          pendingHandshake = init;
+          rawSend({
+            cmd: "register", nodeId, token: enrollToken, sec: "noise-ik-v1",
+            e: init.frame.e, s: init.frame.s, pl: init.frame.pl,
+          });
+        } else {
+          rawSend({
+            cmd: "register", nodeId, token: enrollToken, capabilities: caps,
+          });
+        }
       });
     } catch (err) {
       log(`master link lost: ${err?.stack || err}`);
@@ -475,7 +525,7 @@ function computeCodeHash() {
   const h = createHash("sha256");
   // hash the WHOLE runtime (an rda.mjs change alone must trigger daemon
   // restart, else the in-memory GoalEngine stays stale)
-  for (const name of ["rda_daemon.mjs", "rda.mjs", "protocol.mjs"].sort()) {
+  for (const name of ["rda_daemon.mjs", "rda.mjs", "protocol.mjs", "noise.mjs"].sort()) {
     const fp = join(base, name);
     try {
       h.update(name);
@@ -509,7 +559,13 @@ export async function cmdServe(port, { master, nodeToken } = {}) {
     const idx = master.lastIndexOf(":");
     const host = idx > 0 ? master.slice(0, idx) : "127.0.0.1";
     const mport = Number(master.slice(idx + 1)) || 9700;
-    masterLinkLoop(state, host, mport, nodeToken, hostname()).catch(() => {});
+    // optional E2EE: <state-dir>/node-key.json {priv,pub,masterPub} (base64)
+    let noiseKey = null;
+    try {
+      noiseKey = JSON.parse(readFileSync(join(RAO_DIR, "node-key.json"), "utf8"));
+      log("noise-ik enabled (node-key.json found)");
+    } catch { /* plain link */ }
+    masterLinkLoop(state, host, mport, nodeToken, hostname(), noiseKey).catch(() => {});
   }
   log(`serving on 127.0.0.1:${port}`);
   const cleanup = () => {
