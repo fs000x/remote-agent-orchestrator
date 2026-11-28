@@ -1,5 +1,10 @@
 # rao 节点模式协议设计（v0.10 并存架构）
 
+> **v1.0.0 变更**：注册行可携带 `sec:"noise-ik-v1"` + `e/s/pl`（Noise_IK
+> ik1 帧）发起加密注册；主控回 `registered` + `e/pl`（ik2）；其后所有消息
+> 以 `{"t":"d","n":<计数>,"ct":<base64>}` 密文帧双向传输。配对流程见
+> docs/DEPLOYMENT.md §7.4（一次性码 -> 设备公钥登记）。
+
 - 状态: v0.10 实现依据
 - 决策记录: 单主控星型拓扑；注册令牌→节点令牌；TCP+JSON Lines+令牌（LAN 明文，TLS 后续）；
   设备清单并存（node 注册自动出现 + devices.json 策略覆盖）；SSH Transport 原样保留

@@ -1,0 +1,40 @@
+{
+  "name": "rao",
+  "version": "1.0.0",
+  "description": "Remote Agent Orchestrator — dispatch goals to semi-autonomous agents on remote devices (MCP server for ZCode/Claude/Codex)",
+  "type": "module",
+  "license": "MIT",
+  "author": "fs000x",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "rao": "./dist/cli.js",
+    "rao-relay": "./dist/relay/server.js"
+  },
+  "exports": {
+    ".": "./dist/index.js",
+    "./mcp": "./dist/mcpServer.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/copy-runtime.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "commander": "^12.1.0",
+    "ssh2": "^1.17.0",
+    "zod": "^3.25.76"
+  },
+  "optionalDependencies": {
+    "keyring": "^0.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/ssh2": "^1.15.6",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  }
+}
