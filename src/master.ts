@@ -204,6 +204,11 @@ export class MasterServer {
   readonly noiseNodeKeys: Map<string, Buffer>;
   /** handshake-replay guard (per process) */
   readonly seenEphemerals = new Set<string>();
+  /** pairing one-time codes: code -> {nodeId, expiresMs} (one-time, 5 min) */
+  private readonly pairingCodes = new Map<string, { nodeId: string; expiresMs: number }>();
+  /** enrolled node static pubs (persisted at nodes-noise.json) */
+  private readonly enrolledNoise = new Map<string, Buffer>();
+  private readonly noiseEnrollPath = join(raoStateDir(), "nodes-noise.json");
 
   constructor(opts: {
     port?: number;
@@ -217,6 +222,53 @@ export class MasterServer {
     this.noiseStatic = opts.noiseStatic ?? null;
     this.noiseNodeKeys = opts.noiseNodeKeys ?? new Map();
     this.enrollmentToken = ensureMasterToken();
+    this.loadNoiseEnrollments();
+  }
+
+  /* -- device pairing v1 (one-time code -> key possession) ---------------- */
+
+  /** admin-side: mint a one-time pairing code for nodeId (5 min TTL) */
+  createPairingCode(nodeId: string): { code: string; nodeId: string; expiresMs: number } {
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    this.pairingCodes.set(code, { nodeId, expiresMs: Date.now() + 5 * 60_000 });
+    // opportunistic cleanup of expired codes
+    for (const [c, rec] of this.pairingCodes) {
+      if (rec.expiresMs < Date.now()) this.pairingCodes.delete(c);
+    }
+    return { code, nodeId, expiresMs: Date.now() + 5 * 60_000 };
+  }
+
+  /** device-side: consume a code; verifies key POSSESSION (the device
+   *  generated its noise keypair locally and presents the public half) */
+  private consumePairingCode(code: string, nodeId: string, noisePub: Buffer): void {
+    const rec = this.pairingCodes.get(code);
+    if (!rec) throw new Error("invalid pairing code");
+    if (rec.expiresMs < Date.now()) {
+      this.pairingCodes.delete(code);
+      throw new Error("pairing code expired");
+    }
+    if (rec.nodeId !== nodeId) {
+      throw new Error("pairing code was issued for a different nodeId");
+    }
+    this.pairingCodes.delete(code); // one-time
+    this.enrolledNoise.set(nodeId, noisePub);
+    this.noiseNodeKeys.set(nodeId, noisePub);
+    mkdirSync(raoStateDir(), { recursive: true });
+    const data: Record<string, string> = {};
+    for (const [nid, pub] of this.enrolledNoise) {
+      data[nid] = pub.toString("base64");
+    }
+    writeFileSync(this.noiseEnrollPath, JSON.stringify(data, null, 2));
+  }
+
+  private loadNoiseEnrollments(): void {
+    try {
+      const data = JSON.parse(readFileSync(this.noiseEnrollPath, "utf8")) as Record<string, string>;
+      for (const [nid, pubB64] of Object.entries(data)) {
+        this.enrolledNoise.set(nid, Buffer.from(pubB64, "base64"));
+        this.noiseNodeKeys.set(nid, Buffer.from(pubB64, "base64"));
+      }
+    } catch { /* no enrollments yet */ }
   }
 
   /* -- node connection plumbing ------------------------------------------ */
@@ -399,6 +451,50 @@ export class MasterServer {
       let msg: WrappedMsg;
       try { msg = JSON.parse(line); } catch { return; }
       if (nodeId === null) {
+        // one-shot control lines before any register: pairing endpoints
+        if (msg.cmd === "pair-create") {
+          // admin-only: possession of the local master token
+          try {
+            if (msg.adminToken !== this.enrollmentToken) {
+              throw new Error("admin token mismatch");
+            }
+            const made = this.createPairingCode(String(msg.nodeId ?? ""));
+            sock.write(JSON.stringify({
+              type: "pair-code", code: made.code, nodeId: made.nodeId,
+              expiresMs: made.expiresMs, masterVersion: RAO_VERSION,
+            }) + "\n");
+          } catch (err) {
+            sock.write(JSON.stringify({
+              type: "error", message: String((err as Error)?.message ?? err),
+            }) + "\n");
+          }
+          sock.end();
+          return;
+        }
+        if (msg.cmd === "pair") {
+          // device presents its locally-generated noise public key
+          try {
+            const code = String(msg.code ?? "");
+            const nid = String(msg.nodeId ?? "");
+            const noisePub = Buffer.from(String(msg.noisePub ?? ""), "base64");
+            if (!nid || noisePub.length !== 32) {
+              throw new Error("nodeId and 32-byte noisePub required");
+            }
+            this.consumePairingCode(code, nid, noisePub);
+            sock.write(JSON.stringify({
+              type: "paired", nodeId: nid,
+              masterNoisePub: (this.noiseStatic?.pub ?? Buffer.alloc(0)).toString("base64"),
+              enrollmentToken: this.enrollmentToken,
+              masterVersion: RAO_VERSION,
+            }) + "\n");
+          } catch (err) {
+            sock.write(JSON.stringify({
+              type: "error", message: String((err as Error)?.message ?? err),
+            }) + "\n");
+          }
+          sock.end();
+          return;
+        }
         // first line must be a valid register
         if (msg.cmd !== "register" || msg.token !== this.enrollmentToken) {
           sock.write(JSON.stringify({

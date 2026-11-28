@@ -46,7 +46,7 @@ import {
   KIND_ERROR, makeEvent, newGoalId, nowMs, validateGoal,
 } from "./protocol.mjs";
 import { GoalEngine } from "./rda.mjs";
-import { initiatorHandshake } from "./noise.mjs";
+import { initiatorHandshake, x25519Generate } from "./noise.mjs";
 
 export const DAEMON_VERSION = "0.3.0";
 const HEARTBEAT_MS = 5000;
@@ -536,6 +536,13 @@ function computeCodeHash() {
 }
 
 export async function cmdServe(port, { master, nodeToken } = {}) {
+  if (master && !nodeToken) {
+    // paired mode: the enrollment token persists in node-key.json
+    try {
+      const nk = JSON.parse(readFileSync(join(RAO_DIR, "node-key.json"), "utf8"));
+      if (nk.enrollmentToken) nodeToken = nk.enrollmentToken;
+    } catch { /* plain enrollment via --token */ }
+  }
   mkdirSync(RAO_DIR, { recursive: true });
   const token = randomBytes(16).toString("hex");
   if (!port) port = await pickFreePort();
@@ -800,6 +807,63 @@ export async function cmdBridge() {
 }
 
 /* ------------------------------------------------------------------ *
+ * device pairing v1: one-shot client — prove possession of the one-time
+ * code; the locally-generated noise public key gets enrolled on the master
+ * ------------------------------------------------------------------ */
+export async function cmdPair(masterEndpoint, nodeId, code) {
+  const idx = masterEndpoint.lastIndexOf(":");
+  const host = idx > 0 ? masterEndpoint.slice(0, idx) : "127.0.0.1";
+  const mport = Number(masterEndpoint.slice(idx + 1)) || 9700;
+  // reuse an existing identity if present (stability across re-pairings)
+  let keyPair;
+  let keyPath = join(RAO_DIR, "node-key.json");
+  try {
+    keyPair = JSON.parse(readFileSync(keyPath, "utf8"));
+    if (!keyPair.priv || !keyPair.pub) throw new Error("corrupt");
+    log("reusing existing node key identity");
+  } catch {
+    const kp = x25519Generate();
+    keyPair = {
+      priv: kp.priv.toString("base64"),
+      pub: kp.pub.toString("base64"),
+    };
+  }
+  const reply = await new Promise((resolve) => {
+    const sock = connect({ host, port: mport });
+    const connectGuard = setTimeout(() => resolve({ type: "error", message: "connect timeout" }), 8000);
+    const rl = createInterface({ input: sock, terminal: false });
+    rl.on("error", () => { /* handled via timeout */ });
+    rl.on("line", (raw) => {
+      const t = raw.trim();
+      if (!t) return;
+      try { resolve(JSON.parse(t)); } catch { /* skip */ }
+    });
+    sock.on("connect", () => {
+      clearTimeout(connectGuard);
+      sock.write(JSON.stringify({
+        cmd: "pair", code, nodeId, noisePub: keyPair.pub,
+      }) + "\n");
+    });
+  });
+  if (!reply || reply.type !== "paired") {
+    process.stdout.write(JSON.stringify(reply ?? { type: "error", message: "no reply" }) + "\n");
+    return 1;
+  }
+  keyPair.masterPub = reply.masterNoisePub;
+  keyPair.enrollmentToken = reply.enrollmentToken;
+  keyPair.master = masterEndpoint;
+  keyPair.nodeId = nodeId;
+  keyPair.pairedAtMs = nowMs();
+  mkdirSync(RAO_DIR, { recursive: true });
+  writeFileSync(keyPath, JSON.stringify(keyPair, null, 2));
+  process.stdout.write(JSON.stringify({
+    type: "paired", nodeId, keyPath,
+    masterVersion: reply.masterVersion,
+  }) + "\n");
+  return 0;
+}
+
+/* ------------------------------------------------------------------ *
  * CLI
  * ------------------------------------------------------------------ */
 export async function main(argv = process.argv.slice(2)) {
@@ -852,6 +916,17 @@ export async function main(argv = process.argv.slice(2)) {
     return cmdStatusOne(goalId);
   }
   if (cmd === "client-bridge") return cmdBridge();
+  if (cmd === "pair") {
+    const masterEndpoint = flag("--master");
+    const pairNodeId = flag("--node-id");
+    const pairCode = flag("--code");
+    if (!masterEndpoint || !pairNodeId || !pairCode) {
+      process.stderr.write(
+        "pair requires --master host:port --node-id ID --code NNNNNN\n");
+      return 2;
+    }
+    return cmdPair(masterEndpoint, pairNodeId, pairCode);
+  }
   process.stderr.write(
     "usage: node rda_daemon.mjs [--home DIR] <serve|start|ping|stop|status-one|inject-one|client-bridge>\n");
   return 2;
