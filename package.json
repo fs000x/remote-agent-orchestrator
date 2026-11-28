@@ -1,6 +1,6 @@
 {
   "name": "rao",
-  "version": "1.0.0-alpha.1",
+  "version": "1.0.0",
   "description": "Remote Agent Orchestrator — dispatch goals to semi-autonomous agents on remote devices (MCP server for ZCode/Claude/Codex)",
   "type": "module",
   "license": "MIT",
