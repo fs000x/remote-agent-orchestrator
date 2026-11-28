@@ -349,9 +349,14 @@ async function masterLinkLoop(state, host, mport, enrollToken, nodeId) {
   for (;;) {
     try {
       await new Promise((resolveLink) => {
-        const sock = connect({ host, port: mport, timeout: 10000 }, () => {
+        // NOTE: no connect({timeout}) — that installs an IDLE timeout and
+        // would drop the link during quiet goal phases; connect guarding
+        // is done via the one-shot timer below instead.
+        const sock = connect({ host, port: mport }, () => {
+          clearTimeout(connectGuard);
           sock.setNoDelay?.(true);
         });
+        const connectGuard = setTimeout(() => fail("connect timeout"), 10000);
         const send = makeSend(sock);
         let authed = false;
         const rl = createInterface({ input: sock, terminal: false });
@@ -360,6 +365,7 @@ async function masterLinkLoop(state, host, mport, enrollToken, nodeId) {
         const fail = (why) => {
           if (closed) return;
           closed = true;
+          clearTimeout(connectGuard);
           log(`master link lost: ${why}`);
           // drop our subscriptions on this dead link
           for (const rec of state.goals.values()) {
@@ -371,7 +377,6 @@ async function masterLinkLoop(state, host, mport, enrollToken, nodeId) {
         };
         sock.on("error", (err) => fail(String(err)));
         sock.on("close", () => fail("EOF"));
-        sock.on("timeout", () => fail("connect timeout"));
         rl.on("line", (raw) => {
           const line = raw.trim();
           if (!line) return;
@@ -694,22 +699,27 @@ export async function cmdBridge() {
     return 3;
   }
   await new Promise((resolveBridge) => {
-    const sock = connect({ host: "127.0.0.1", port: dj.port, timeout: 5000 });
+    // NOTE: no connect({timeout}) here — that option installs an IDLE
+    // timeout which kills the bridge during quiet goal phases (wait_file
+    // etc.). Python parity: pump reads block indefinitely (settimeout(None)).
+    const sock = connect({ host: "127.0.0.1", port: dj.port });
     let readySeen = false;
     let stdinEnded = false;
+    const connectGuard = setTimeout(() => die("connect timeout", 3), 5000);
     const die = (why, code) => {
+      clearTimeout(connectGuard);
       process.stderr.write(`[bridge] pump exit (${why})\n`);
       try { sock.destroy(); } catch { /* ignore */ }
       resolveBridge(code);
     };
     sock.on("error", (err) => die(`socket error: ${err}`, 3));
-    sock.on("timeout", () => die("connect timeout", 3));
     sock.on("close", () => {
       // reader lost the daemon stream: kill the bridge so the SSH
       // channel EOFs and the orchestrator reconnects with attach
       if (!stdinEnded) die("EOF from daemon or error", 3);
     });
     sock.on("connect", () => {
+      clearTimeout(connectGuard);
       sock.setNoDelay?.(true);
       sock.write(JSON.stringify({ cmd: "auth", token: dj.token }) + "\n");
     });

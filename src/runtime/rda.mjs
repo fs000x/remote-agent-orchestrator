@@ -441,7 +441,7 @@ export class GoalEngine {
     const maxTurns = Number(c.maxSteps ?? DEFAULTS.maxSteps);
     const timeoutMs = Number(c.timeoutMs ?? DEFAULTS.timeoutMs);
     const cmd = [
-      claudeBin, "-p", this.goal.objective ?? "",
+      "-p", this.goal.objective ?? "",
       "--output-format", "stream-json", "--verbose",
       "--max-turns", String(maxTurns),
     ];
